@@ -4,7 +4,11 @@
 declare namespace Cloudflare {
 	interface Env {
 		NODE_ENV: "production";
-	}
+        DATABASE_URL: string;
+        BETTER_AUTH_SECRET: string;
+        BETTER_AUTH_URL: string;
+        CORS_ORIGIN: string;
+    }
 }
 interface CloudflareBindings extends Cloudflare.Env {}
 type StringifyValues<EnvType extends Record<string, unknown>> = {

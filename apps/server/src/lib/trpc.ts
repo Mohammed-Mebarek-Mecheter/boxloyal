@@ -1,3 +1,4 @@
+// lib/trpc.ts
 import { initTRPC, TRPCError } from "@trpc/server";
 import type { Context } from "./context";
 

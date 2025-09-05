@@ -38,6 +38,9 @@ importers:
       drizzle-orm:
         specifier: ^0.44.2
         version: 0.44.5(@neondatabase/serverless@1.0.1)(@types/pg@8.15.5)(kysely@0.28.5)
+      drizzle-zod:
+        specifier: ^0.8.3
+        version: 0.8.3(drizzle-orm@0.44.5(@neondatabase/serverless@1.0.1)(@types/pg@8.15.5)(kysely@0.28.5))(zod@4.1.5)
       hono:
         specifier: ^4.8.2
         version: 4.9.6
@@ -3181,6 +3184,12 @@ packages:
         optional: true
       sqlite3:
         optional: true
+
+  drizzle-zod@0.8.3:
+    resolution: {integrity: sha512-66yVOuvGhKJnTdiqj1/Xaaz9/qzOdRJADpDa68enqS6g3t0kpNkwNYjUuaeXgZfO/UWuIM9HIhSlJ6C5ZraMww==}
+    peerDependencies:
+      drizzle-orm: '>=0.36.0'
+      zod: ^3.25.0 || ^4.0.0
 
   dts-resolver@2.1.2:
     resolution: {integrity: sha512-xeXHBQkn2ISSXxbJWD828PFjtyg+/UrMDo7W4Ffcs7+YWCquxU8YjV1KoxuiL+eJ5pg3ll+bC6flVv61L3LKZg==}
@@ -7918,6 +7927,11 @@ snapshots:
       '@neondatabase/serverless': 1.0.1
       '@types/pg': 8.15.5
       kysely: 0.28.5
+
+  drizzle-zod@0.8.3(drizzle-orm@0.44.5(@neondatabase/serverless@1.0.1)(@types/pg@8.15.5)(kysely@0.28.5))(zod@4.1.5):
+    dependencies:
+      drizzle-orm: 0.44.5(@neondatabase/serverless@1.0.1)(@types/pg@8.15.5)(kysely@0.28.5)
+      zod: 4.1.5
 
   dts-resolver@2.1.2: {}
 
