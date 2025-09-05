@@ -1,0 +1,21 @@
+// Better-T-Stack configuration file
+// safe to delete
+
+{
+	"$schema": "https://r2.better-t-stack.dev/schema.json",
+	"version": "2.40.4",
+	"createdAt": "2025-09-05T23:18:22.874Z",
+	"database": "postgres",
+	"orm": "drizzle",
+	"backend": "hono",
+	"runtime": "workers",
+	"frontend": ["next"],
+	"addons": ["biome", "pwa", "turborepo"],
+	"examples": [],
+	"auth": "better-auth",
+	"packageManager": "pnpm",
+	"dbSetup": "neon",
+	"api": "trpc",
+	"webDeploy": "wrangler",
+	"serverDeploy": "wrangler"
+}
