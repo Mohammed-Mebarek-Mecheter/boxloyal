@@ -80,27 +80,27 @@ export const boxes = pgTable("boxes", {
     // Subscription & Billing
     subscriptionStatus: subscriptionStatusEnum("subscription_status").default("trial").notNull(),
     subscriptionTier: subscriptionTierEnum("subscription_tier").default("starter").notNull(),
+    // --- Trial Handling ---
+    trialStartsAt: timestamp("trial_starts_at"), // Added for completeness
     trialEndsAt: timestamp("trial_ends_at"),
-    subscriptionEndsAt: timestamp("subscription_ends_at"),
+    // --- Subscription Period ---
+    subscriptionStartsAt: timestamp("subscription_starts_at"), // When the paid subscription effectively started (after trial or immediately)
+    subscriptionEndsAt: timestamp("subscription_ends_at"), // When the current paid period ends (or when access should be cut off if canceled)
 
-    // Polar.sh Integration
+    // Polar Integration
     polarCustomerId: text("polar_customer_id"),
     polarSubscriptionId: text("polar_subscription_id"),
 
-    // Limits based on tier
-    athleteLimit: integer("athlete_limit").default(200).notNull(), // Changed from memberLimit
-    coachLimit: integer("coach_limit").default(10).notNull(),
-
     // Status & Metadata
-    status: boxStatusEnum("status").default("active").notNull(),
+    status: boxStatusEnum("status").default("active").notNull(), // active, suspended, trial_expired
     isDemo: boolean("is_demo").default(false).notNull(),
-    demoDataResetAt: timestamp("demo_data_reset_at"), // Hourly reset for demo boxes
+    demoDataResetAt: timestamp("demo_data_reset_at"),
 
     // Settings
-    settings: text("settings"), // JSON for flexible box-specific settings
+    settings: text("settings"),
 
     // Onboarding settings
-    requireApproval: boolean("require_approval").default(true).notNull(), // For public signups
+    requireApproval: boolean("require_approval").default(true).notNull(),
     allowPublicSignup: boolean("allow_public_signup").default(true).notNull(),
 
     // Timestamps
@@ -112,6 +112,9 @@ export const boxes = pgTable("boxes", {
     subscriptionStatusIdx: index("box_subscription_status_idx").on(table.subscriptionStatus),
     polarCustomerIdx: index("box_polar_customer_idx").on(table.polarCustomerId),
     isDemoIdx: index("box_is_demo_idx").on(table.isDemo),
+    statusIdx: index("box_status_idx").on(table.status), // Crucial for access checks
+    subscriptionEndsAtIndex: index("box_subscription_ends_at_idx").on(table.subscriptionEndsAt),
+    trialEndsAtIndex: index("box_trial_ends_at_idx").on(table.trialEndsAt),
 }));
 
 // Demo athlete personas for storytelling

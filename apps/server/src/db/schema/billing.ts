@@ -85,14 +85,14 @@ export const customerProfiles = pgTable("customer_profiles", {
 export const subscriptions = pgTable("subscriptions", {
     id: uuid("id").defaultRandom().primaryKey(),
     boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
-    customerProfileId: uuid("customer_profile_id").references(() => customerProfiles.id),
+    customerProfileId: uuid("customer_profile_id").references(() => customerProfiles.id, { onDelete: "cascade" }).notNull(), // Make non-nullable if always linked
 
     // Polar subscription details
     polarSubscriptionId: text("polar_subscription_id").notNull().unique(),
     polarProductId: text("polar_product_id").notNull(),
 
     // Subscription state
-    status: text("status").notNull(), // "active", "canceled", "past_due", etc.
+    status: text("status").notNull(), // "active", "canceled", "past_due", "unpaid", "incomplete", "incomplete_expired", "trialing"
     currentPeriodStart: timestamp("current_period_start").notNull(),
     currentPeriodEnd: timestamp("current_period_end").notNull(),
     cancelAtPeriodEnd: boolean("cancel_at_period_end").default(false).notNull(),
@@ -106,6 +106,12 @@ export const subscriptions = pgTable("subscriptions", {
     // Metadata
     metadata: json("metadata"), // Additional data from Polar
 
+    // --- New Fields for Enhanced Tracking ---
+    // Track the specific plan tier associated with this subscription for easier lookup
+    planTier: text("plan_tier").references(() => subscriptionPlans.tier), // References subscriptionPlans.tier
+    // Timestamp for when the subscription was last synced with Polar
+    lastSyncedAt: timestamp("last_synced_at").defaultNow().notNull(),
+
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
@@ -113,6 +119,8 @@ export const subscriptions = pgTable("subscriptions", {
     polarSubscriptionIdx: index("subscriptions_polar_subscription_idx").on(table.polarSubscriptionId),
     statusIdx: index("subscriptions_status_idx").on(table.status),
     currentPeriodEndIdx: index("subscriptions_current_period_end_idx").on(table.currentPeriodEnd),
+    planTierIdx: index("subscriptions_plan_tier_idx").on(table.planTier),
+    cancelAtPeriodEndIdx: index("subscriptions_cancel_at_period_end_idx").on(table.cancelAtPeriodEnd),
 }));
 
 // Orders/payments tracking
@@ -215,6 +223,8 @@ export const subscriptionsRelations = relations(subscriptions, ({ one, many }) =
     customerProfile: one(customerProfiles, {
         fields: [subscriptions.customerProfileId],
         references: [customerProfiles.id],
+        // Ensure subscription cannot exist without a customer profile
+        relationName: "subscription_customer_profile"
     }),
     orders: many(orders),
 }));
