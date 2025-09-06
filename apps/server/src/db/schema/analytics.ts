@@ -12,9 +12,9 @@ import {
     json
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
-import { gyms, gymMemberships } from "./core";
+import {boxes, boxMemberships, userRoleEnum} from "./core";
 
-// Risk levels for member retention
+// Risk levels for athlete retention
 export const riskLevelEnum = pgEnum("risk_level", [
     "low",
     "medium",
@@ -40,11 +40,11 @@ export const alertStatusEnum = pgEnum("alert_status", [
     "dismissed"
 ]);
 
-// Member retention risk scores
-export const memberRiskScores = pgTable("member_risk_scores", {
+// Athlete retention risk scores
+export const athleteRiskScores = pgTable("athlete_risk_scores", {
     id: uuid("id").defaultRandom().primaryKey(),
-    gymId: uuid("gym_id").references(() => gyms.id, { onDelete: "cascade" }).notNull(),
-    membershipId: uuid("membership_id").references(() => gymMemberships.id, { onDelete: "cascade" }).notNull(),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
+    membershipId: uuid("membership_id").references(() => boxMemberships.id, { onDelete: "cascade" }).notNull(),
 
     // Risk Assessment
     overallRiskScore: decimal("overall_risk_score", { precision: 5, scale: 2 }).notNull(), // 0-100
@@ -78,18 +78,18 @@ export const memberRiskScores = pgTable("member_risk_scores", {
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
-    gymMemberIdx: index("member_risk_scores_gym_member_idx").on(table.gymId, table.membershipId),
-    riskLevelIdx: index("member_risk_scores_risk_level_idx").on(table.riskLevel),
-    overallScoreIdx: index("member_risk_scores_overall_score_idx").on(table.overallRiskScore),
-    calculatedAtIdx: index("member_risk_scores_calculated_at_idx").on(table.calculatedAt),
+    boxAthleteIdx: index("athlete_risk_scores_box_athlete_idx").on(table.boxId, table.membershipId),
+    riskLevelIdx: index("athlete_risk_scores_risk_level_idx").on(table.riskLevel),
+    overallScoreIdx: index("athlete_risk_scores_overall_score_idx").on(table.overallRiskScore),
+    calculatedAtIdx: index("athlete_risk_scores_calculated_at_idx").on(table.calculatedAt),
 }));
 
-// Coach alerts for member intervention
-export const memberAlerts = pgTable("member_alerts", {
+// Coach alerts for athlete intervention
+export const athleteAlerts = pgTable("athlete_alerts", {
     id: uuid("id").defaultRandom().primaryKey(),
-    gymId: uuid("gym_id").references(() => gyms.id, { onDelete: "cascade" }).notNull(),
-    membershipId: uuid("membership_id").references(() => gymMemberships.id, { onDelete: "cascade" }).notNull(),
-    assignedCoachId: uuid("assigned_coach_id").references(() => gymMemberships.id),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
+    membershipId: uuid("membership_id").references(() => boxMemberships.id, { onDelete: "cascade" }).notNull(),
+    assignedCoachId: uuid("assigned_coach_id").references(() => boxMemberships.id),
 
     // Alert Details
     alertType: alertTypeEnum("alert_type").notNull(),
@@ -104,9 +104,9 @@ export const memberAlerts = pgTable("member_alerts", {
     // Status & Resolution
     status: alertStatusEnum("status").default("active").notNull(),
     acknowledgedAt: timestamp("acknowledged_at"),
-    acknowledgedById: uuid("acknowledged_by_id").references(() => gymMemberships.id),
+    acknowledgedById: uuid("acknowledged_by_id").references(() => boxMemberships.id),
     resolvedAt: timestamp("resolved_at"),
-    resolvedById: uuid("resolved_by_id").references(() => gymMemberships.id),
+    resolvedById: uuid("resolved_by_id").references(() => boxMemberships.id),
     resolutionNotes: text("resolution_notes"),
 
     // Follow-up
@@ -116,20 +116,20 @@ export const memberAlerts = pgTable("member_alerts", {
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
-    gymMemberIdx: index("member_alerts_gym_member_idx").on(table.gymId, table.membershipId),
-    statusIdx: index("member_alerts_status_idx").on(table.status),
-    severityIdx: index("member_alerts_severity_idx").on(table.severity),
-    assignedCoachIdx: index("member_alerts_assigned_coach_idx").on(table.assignedCoachId),
-    followUpIdx: index("member_alerts_follow_up_idx").on(table.followUpAt),
+    boxAthleteIdx: index("athlete_alerts_box_athlete_idx").on(table.boxId, table.membershipId),
+    statusIdx: index("athlete_alerts_status_idx").on(table.status),
+    severityIdx: index("athlete_alerts_severity_idx").on(table.severity),
+    assignedCoachIdx: index("athlete_alerts_assigned_coach_idx").on(table.assignedCoachId),
+    followUpIdx: index("athlete_alerts_follow_up_idx").on(table.followUpAt),
 }));
 
 // Coach interventions and actions taken
-export const memberInterventions = pgTable("member_interventions", {
+export const athleteInterventions = pgTable("athlete_interventions", {
     id: uuid("id").defaultRandom().primaryKey(),
-    gymId: uuid("gym_id").references(() => gyms.id, { onDelete: "cascade" }).notNull(),
-    membershipId: uuid("membership_id").references(() => gymMemberships.id, { onDelete: "cascade" }).notNull(),
-    coachId: uuid("coach_id").references(() => gymMemberships.id, { onDelete: "cascade" }).notNull(),
-    alertId: uuid("alert_id").references(() => memberAlerts.id), // Optional - might not be alert-driven
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
+    membershipId: uuid("membership_id").references(() => boxMemberships.id, { onDelete: "cascade" }).notNull(),
+    coachId: uuid("coach_id").references(() => boxMemberships.id, { onDelete: "cascade" }).notNull(),
+    alertId: uuid("alert_id").references(() => athleteAlerts.id), // Optional - might not be alert-driven
 
     // Intervention Details
     interventionType: text("intervention_type").notNull(), // "conversation", "goal_setting", "program_modification", etc.
@@ -138,7 +138,7 @@ export const memberInterventions = pgTable("member_interventions", {
 
     // Outcome
     outcome: text("outcome"), // "positive", "neutral", "negative", "no_response"
-    memberResponse: text("member_response"),
+    athleteResponse: text("athlete_response"),
     coachNotes: text("coach_notes"),
 
     // Follow-up
@@ -152,41 +152,41 @@ export const memberInterventions = pgTable("member_interventions", {
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
-    gymMemberIdx: index("member_interventions_gym_member_idx").on(table.gymId, table.membershipId),
-    coachIdx: index("member_interventions_coach_idx").on(table.coachId),
-    interventionDateIdx: index("member_interventions_intervention_date_idx").on(table.interventionDate),
+    boxAthleteIdx: index("athlete_interventions_box_athlete_idx").on(table.boxId, table.membershipId),
+    coachIdx: index("athlete_interventions_coach_idx").on(table.coachId),
+    interventionDateIdx: index("athlete_interventions_intervention_date_idx").on(table.interventionDate),
 }));
 
-// Gym analytics snapshots (daily/weekly/monthly aggregates)
-export const gymAnalytics = pgTable("gym_analytics", {
+// Box analytics snapshots (daily/weekly/monthly aggregates)
+export const boxAnalytics = pgTable("box_analytics", {
     id: uuid("id").defaultRandom().primaryKey(),
-    gymId: uuid("gym_id").references(() => gyms.id, { onDelete: "cascade" }).notNull(),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
 
     // Period
     period: text("period").notNull(), // "daily", "weekly", "monthly"
     periodStart: timestamp("period_start").notNull(),
     periodEnd: timestamp("period_end").notNull(),
 
-    // Member Metrics
-    totalMembers: integer("total_members").notNull(),
-    activeMembers: integer("active_members").notNull(),
-    newMembers: integer("new_members").notNull(),
-    churnedMembers: integer("churned_members").notNull(),
+    // Athlete Metrics
+    totalAthletes: integer("total_athletes").notNull(),
+    activeAthletes: integer("active_athletes").notNull(),
+    newAthletes: integer("new_athletes").notNull(),
+    churnedAthletes: integer("churned_athletes").notNull(),
     retentionRate: decimal("retention_rate", { precision: 5, scale: 2 }),
 
     // Engagement Metrics
     totalCheckins: integer("total_checkins").notNull(),
     totalAttendances: integer("total_attendances").notNull(),
-    avgAttendancePerMember: decimal("avg_attendance_per_member", { precision: 5, scale: 2 }),
-    checkinRate: decimal("checkin_rate", { precision: 5, scale: 2 }), // % of active members checking in
+    avgAttendancePerAthlete: decimal("avg_attendance_per_athlete", { precision: 5, scale: 2 }),
+    checkinRate: decimal("checkin_rate", { precision: 5, scale: 2 }), // % of active athletes checking in
 
     // Performance Metrics
     totalPrs: integer("total_prs").notNull(),
     totalBenchmarkAttempts: integer("total_benchmark_attempts").notNull(),
-    avgMemberPerformanceScore: decimal("avg_member_performance_score", { precision: 5, scale: 2 }),
+    avgAthletePerformanceScore: decimal("avg_athlete_performance_score", { precision: 5, scale: 2 }),
 
     // Risk & Alert Metrics
-    highRiskMembers: integer("high_risk_members").notNull(),
+    highRiskAthletes: integer("high_risk_athletes").notNull(),
     totalActiveAlerts: integer("total_active_alerts").notNull(),
     alertsResolved: integer("alerts_resolved").notNull(),
     avgTimeToAlertResolution: decimal("avg_time_to_alert_resolution", { precision: 8, scale: 2 }), // hours
@@ -202,15 +202,15 @@ export const gymAnalytics = pgTable("gym_analytics", {
 
     createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => ({
-    gymPeriodIdx: index("gym_analytics_gym_period_idx").on(table.gymId, table.period, table.periodStart),
-    periodStartIdx: index("gym_analytics_period_start_idx").on(table.periodStart),
+    boxPeriodIdx: index("box_analytics_box_period_idx").on(table.boxId, table.period, table.periodStart),
+    periodStartIdx: index("box_analytics_period_start_idx").on(table.periodStart),
 }));
 
-// Member progress milestones and celebrations
-export const memberMilestones = pgTable("member_milestones", {
+// Athlete progress milestones and celebrations
+export const athleteMilestones = pgTable("athlete_milestones", {
     id: uuid("id").defaultRandom().primaryKey(),
-    gymId: uuid("gym_id").references(() => gyms.id, { onDelete: "cascade" }).notNull(),
-    membershipId: uuid("membership_id").references(() => gymMemberships.id, { onDelete: "cascade" }).notNull(),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
+    membershipId: uuid("membership_id").references(() => boxMemberships.id, { onDelete: "cascade" }).notNull(),
 
     // Milestone Details
     milestoneType: text("milestone_type").notNull(), // "pr", "attendance", "benchmark", "consistency", "transformation"
@@ -233,71 +233,92 @@ export const memberMilestones = pgTable("member_milestones", {
 
     createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (table) => ({
-    gymMemberIdx: index("member_milestones_gym_member_idx").on(table.gymId, table.membershipId),
-    milestoneTypeIdx: index("member_milestones_milestone_type_idx").on(table.milestoneType),
-    achievedAtIdx: index("member_milestones_achieved_at_idx").on(table.achievedAt),
+    boxAthleteIdx: index("athlete_milestones_box_athlete_idx").on(table.boxId, table.membershipId),
+    milestoneTypeIdx: index("athlete_milestones_milestone_type_idx").on(table.milestoneType),
+    achievedAtIdx: index("athlete_milestones_achieved_at_idx").on(table.achievedAt),
+}));
+
+// SaaS Admin
+export const demoEngagementMetrics = pgTable("demo_engagement_metrics", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    boxId: uuid("box_id").references(() => boxes.id).notNull(),
+    role: userRoleEnum("role").notNull(),
+    demoDuration: integer("demo_duration"),
+    featuresExplored: json("features_explored"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => ({
+    boxIdx: index("demo_engagement_metrics_box_idx").on(table.boxId),
+    roleIdx: index("demo_engagement_metrics_role_idx").on(table.role),
+    createdAtIdx: index("demo_engagement_metrics_created_at_idx").on(table.createdAt),
 }));
 
 // Relations
-export const memberRiskScoresRelations = relations(memberRiskScores, ({ one }) => ({
-    gym: one(gyms, {
-        fields: [memberRiskScores.gymId],
-        references: [gyms.id],
+export const athleteRiskScoresRelations = relations(athleteRiskScores, ({ one }) => ({
+    box: one(boxes, {
+        fields: [athleteRiskScores.boxId],
+        references: [boxes.id],
     }),
-    membership: one(gymMemberships, {
-        fields: [memberRiskScores.membershipId],
-        references: [gymMemberships.id],
-    }),
-}));
-
-export const memberAlertsRelations = relations(memberAlerts, ({ one }) => ({
-    gym: one(gyms, {
-        fields: [memberAlerts.gymId],
-        references: [gyms.id],
-    }),
-    membership: one(gymMemberships, {
-        fields: [memberAlerts.membershipId],
-        references: [gymMemberships.id],
-    }),
-    assignedCoach: one(gymMemberships, {
-        fields: [memberAlerts.assignedCoachId],
-        references: [gymMemberships.id],
+    membership: one(boxMemberships, {
+        fields: [athleteRiskScores.membershipId],
+        references: [boxMemberships.id],
     }),
 }));
 
-export const memberInterventionsRelations = relations(memberInterventions, ({ one }) => ({
-    gym: one(gyms, {
-        fields: [memberInterventions.gymId],
-        references: [gyms.id],
+export const athleteAlertsRelations = relations(athleteAlerts, ({ one }) => ({
+    box: one(boxes, {
+        fields: [athleteAlerts.boxId],
+        references: [boxes.id],
     }),
-    membership: one(gymMemberships, {
-        fields: [memberInterventions.membershipId],
-        references: [gymMemberships.id],
+    membership: one(boxMemberships, {
+        fields: [athleteAlerts.membershipId],
+        references: [boxMemberships.id],
     }),
-    coach: one(gymMemberships, {
-        fields: [memberInterventions.coachId],
-        references: [gymMemberships.id],
-    }),
-    alert: one(memberAlerts, {
-        fields: [memberInterventions.alertId],
-        references: [memberAlerts.id],
+    assignedCoach: one(boxMemberships, {
+        fields: [athleteAlerts.assignedCoachId],
+        references: [boxMemberships.id],
     }),
 }));
 
-export const gymAnalyticsRelations = relations(gymAnalytics, ({ one }) => ({
-    gym: one(gyms, {
-        fields: [gymAnalytics.gymId],
-        references: [gyms.id],
+export const athleteInterventionsRelations = relations(athleteInterventions, ({ one }) => ({
+    box: one(boxes, {
+        fields: [athleteInterventions.boxId],
+        references: [boxes.id],
+    }),
+    membership: one(boxMemberships, {
+        fields: [athleteInterventions.membershipId],
+        references: [boxMemberships.id],
+    }),
+    coach: one(boxMemberships, {
+        fields: [athleteInterventions.coachId],
+        references: [boxMemberships.id],
+    }),
+    alert: one(athleteAlerts, {
+        fields: [athleteInterventions.alertId],
+        references: [athleteAlerts.id],
     }),
 }));
 
-export const memberMilestonesRelations = relations(memberMilestones, ({ one }) => ({
-    gym: one(gyms, {
-        fields: [memberMilestones.gymId],
-        references: [gyms.id],
+export const boxAnalyticsRelations = relations(boxAnalytics, ({ one }) => ({
+    box: one(boxes, {
+        fields: [boxAnalytics.boxId],
+        references: [boxes.id],
     }),
-    membership: one(gymMemberships, {
-        fields: [memberMilestones.membershipId],
-        references: [gymMemberships.id],
+}));
+
+export const athleteMilestonesRelations = relations(athleteMilestones, ({ one }) => ({
+    box: one(boxes, {
+        fields: [athleteMilestones.boxId],
+        references: [boxes.id],
+    }),
+    membership: one(boxMemberships, {
+        fields: [athleteMilestones.membershipId],
+        references: [boxMemberships.id],
+    }),
+}));
+
+export const demoEngagementMetricsRelations = relations(demoEngagementMetrics, ({ one }) => ({
+    box: one(boxes, {
+        fields: [demoEngagementMetrics.boxId],
+        references: [boxes.id],
     }),
 }));
