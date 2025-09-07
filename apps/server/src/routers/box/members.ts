@@ -10,7 +10,7 @@ import { BoxService } from "@/lib/services/box-service";
 import { TRPCError } from "@trpc/server";
 import { boxMemberships } from "@/db/schema";
 import { db } from "@/db";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 export const boxMembersRouter = router({
     // Get box members (coaches and above can view all, athletes see limited info)

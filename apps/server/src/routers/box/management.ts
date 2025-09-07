@@ -25,7 +25,7 @@ export const boxManagementRouter = router({
             zipCode: z.string().max(20).optional(),
             country: z.string().max(50).default("US"),
             timezone: z.string().default("America/New_York"),
-            website: z.string().url().optional(),
+            website: z.url().optional(),
             description: z.string().max(500).optional(),
         }))
         .mutation(async ({ ctx, input }) => {
@@ -98,9 +98,9 @@ export const boxManagementRouter = router({
             city: z.string().max(100).optional(),
             state: z.string().max(50).optional(),
             zipCode: z.string().max(20).optional(),
-            website: z.string().url().optional(),
+            website: z.url().optional(),
             timezone: z.string().optional(),
-            logo: z.string().url().optional(),
+            logo: z.url().optional(),
             requireApproval: z.boolean().optional(),
             allowPublicSignup: z.boolean().optional(),
         }))

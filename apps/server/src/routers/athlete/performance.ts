@@ -29,7 +29,7 @@ export const athletePerformanceRouter = router({
             reps: z.number().positive().optional(),
             notes: z.string().max(500).optional(),
             coachNotes: z.string().max(500).optional(),
-            videoUrl: z.string().url().optional(),
+            videoUrl: z.url().optional(),
             videoVisibility: z.enum(["private", "box", "public"]).default("private"),
             achievedAt: z.date().optional(),
         }))

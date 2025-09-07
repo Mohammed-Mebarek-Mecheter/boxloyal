@@ -3,20 +3,14 @@ import { router, protectedProcedure } from "@/lib/trpc";
 import { z } from "zod";
 import { db } from "@/db";
 import {
-    subscriptions,
-    subscriptionPlans,
-    gracePeriods,
-    boxes,
-    boxMemberships,
-    usageEvents,
-    orders,
-    user, schema
+    boxMemberships, usageEvents,
+    user
 } from "@/db/schema";
 import {
     requireCoachOrAbove,
     requireBoxOwner
 } from "@/lib/permissions";
-import {eq, desc, and, gte, count, sql, or, SQL, lt} from "drizzle-orm";
+import {eq, and, gte, lt, or, SQL, sql, desc} from "drizzle-orm";
 import { AnalyticsService } from "@/lib/services/analytics-service";
 import { BillingService } from "@/lib/services/billing-service";
 
@@ -179,71 +173,15 @@ export const analyticsRouter = router({
             );
         }),
 
-    // Get coach performance metrics
+    // Get coach performance metrics - Updated to use materialized view
     getCoachPerformance: protectedProcedure
         .input(z.object({
             boxId: z.string(),
-            days: z.number().min(1).max(365).default(30),
         }))
         .query(async ({ ctx, input }) => {
             await requireBoxOwner(ctx, input.boxId);
 
-            const startDate = new Date();
-            startDate.setDate(startDate.getDate() - input.days);
-
-            // Get interventions by coach
-            const interventionsByCoach = await db
-                .select({
-                    coachId: schema.athleteInterventions.coachId,
-                    count: count(),
-                    positiveOutcomes: sql<number>`SUM(CASE WHEN ${schema.athleteInterventions.outcome} = 'positive' THEN 1 ELSE 0 END)`,
-                })
-                .from(schema.athleteInterventions)
-                .where(and(
-                    eq(schema.athleteInterventions.boxId, input.boxId),
-                    gte(schema.athleteInterventions.interventionDate, startDate)
-                ))
-                .groupBy(schema.athleteInterventions.coachId);
-
-            // Get coach details with user information
-            const coachDetails = await db
-                .select({
-                    id: boxMemberships.id,
-                    userId: boxMemberships.userId,
-                    role: boxMemberships.role,
-                })
-                .from(boxMemberships)
-                .where(and(
-                    eq(boxMemberships.boxId, input.boxId),
-                    eq(boxMemberships.isActive, true),
-                    sql`${boxMemberships.role} IN ('coach', 'head_coach')`
-                ));
-
-            // Get user names for coaches
-            const coachUsers = await db
-                .select({
-                    id: user.id,
-                    name: user.name,
-                })
-                .from(user)
-                .where(sql`${user.id} IN (${coachDetails.map(c => c.userId)})`);
-
-            // Combine data
-            const coachPerformance = coachDetails.map(coach => {
-                const coachStats = interventionsByCoach.find(stats => stats.coachId === coach.id);
-                const userInfo = coachUsers.find(u => u.id === coach.userId);
-
-                return {
-                    id: coach.id,
-                    name: userInfo?.name || "Unknown Coach",
-                    role: coach.role,
-                    interventions: coachStats?.count || 0,
-                    successRate: coachStats ?
-                        Math.round((coachStats.positiveOutcomes / coachStats.count) * 100) : 0
-                };
-            });
-
-            return coachPerformance;
+            return AnalyticsService.getCoachPerformance(input.boxId);
         }),
 
     // Get athlete engagement score
@@ -263,6 +201,23 @@ export const analyticsRouter = router({
             );
         }),
 
+    // Get engagement leaderboard - New endpoint using materialized view
+    getEngagementLeaderboard: protectedProcedure
+        .input(z.object({
+            boxId: z.string(),
+            days: z.number().min(1).max(365).default(30),
+            limit: z.number().min(1).max(100).default(20),
+        }))
+        .query(async ({ ctx, input }) => {
+            await requireCoachOrAbove(ctx, input.boxId);
+
+            return AnalyticsService.getEngagementLeaderboard(
+                input.boxId,
+                input.days,
+                input.limit
+            );
+        }),
+
     // Get correlation between wellness and performance
     getWellnessPerformanceCorrelation: protectedProcedure
         .input(z.object({
@@ -278,6 +233,30 @@ export const analyticsRouter = router({
             );
         }),
 
+    // Refresh analytics views - New endpoint for admin
+    refreshAnalyticsViews: protectedProcedure
+        .input(z.object({
+            boxId: z.string(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+            await requireBoxOwner(ctx, input.boxId);
+
+            try {
+                // Refresh each materialized view individually
+                await db.execute(sql`REFRESH MATERIALIZED VIEW mv_box_health_dashboard`);
+                await db.execute(sql`REFRESH MATERIALIZED VIEW mv_athlete_engagement_scores`);
+                await db.execute(sql`REFRESH MATERIALIZED VIEW mv_coach_performance`);
+
+                return {
+                    success: true,
+                    message: "Analytics views refreshed successfully"
+                };
+            } catch (error) {
+                console.error("Failed to refresh materialized views", error);
+                throw new Error("Failed to refresh analytics views");
+            }
+        }),
+
     // Enhanced usage analytics with trend analysis
     getUsageAnalytics: protectedProcedure
         .input(z.object({
@@ -290,6 +269,7 @@ export const analyticsRouter = router({
         .query(async ({ ctx, input }) => {
             await requireBoxOwner(ctx, input.boxId);
 
+            // This implementation remains the same as it's not yet optimized with materialized views
             const startDate =
                 input.startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // last 30 days
             const endDate = input.endDate || new Date();

@@ -11,9 +11,22 @@ import {
     boxMemberships,
     athleteBenchmarks,
     wodAttendance,
-    user, userProfiles
+    user, userProfiles,
+    subscriptions,
+    subscriptionPlans
 } from "@/db/schema";
-import {eq, desc, and, gte, lte, count, avg, sql, inArray} from "drizzle-orm";
+import {
+    mvBoxHealthDashboard,
+    vwAthleteRiskOverview,
+    mvCoachPerformance,
+    mvAthleteEngagementScores,
+    vwWellnessPerformanceCorrelation,
+    mvMonthlyRetention,
+    mvAthleteProgress,
+    vwBoxSubscriptionHealth,
+    mvWellnessTrends
+} from "@/db/schema/views";
+import {eq, desc, and, gte, count, sql, inArray} from "drizzle-orm";
 
 // Types for better type safety
 export type RiskLevel = "low" | "medium" | "high" | "critical";
@@ -53,26 +66,65 @@ export interface BoxHealthMetrics {
     };
 }
 
+export interface RetentionData {
+    boxId: string;
+    cohortMonth: Date;
+    cohortSize: number;
+    activityMonth: Date;
+    activeMembers: number;
+    retentionRate: number;
+    monthsSinceJoin: number;
+}
+
+export interface SubscriptionHealth {
+    boxId: string;
+    boxName: string;
+    subscriptionStatus: string;
+    subscriptionTier: string;
+    trialEndsAt: Date | null;
+    subscriptionEndsAt: Date | null;
+    polarSubscriptionStatus: string | null;
+    currentPeriodEnd: Date | null;
+    cancelAtPeriodEnd: boolean | null;
+    activeAthletes: number;
+    activeCoaches: number;
+    athleteLimit: number | null;
+    coachLimit: number | null;
+    healthStatus: string;
+}
+
+export interface WellnessTrend {
+    boxId: string;
+    membershipId: string;
+    weekStart: Date;
+    avgEnergy: number | null;
+    avgSleep: number | null;
+    avgStress: number | null;
+    avgMotivation: number | null;
+    avgReadiness: number | null;
+    checkinCount: number;
+}
+
 export class AnalyticsService {
     /**
-     * Get at-risk athletes for a box
+     * Get at-risk athletes for a box - Using vw_athlete_risk_overview
      */
     static async getAtRiskAthletes(
         boxId: string,
         riskLevel?: RiskLevel,
         limit: number = 20
     ) {
-        const conditions = [eq(athleteRiskScores.boxId, boxId)];
+        const conditions = [eq(vwAthleteRiskOverview.boxId, boxId)];
 
         if (riskLevel) {
-            conditions.push(eq(athleteRiskScores.riskLevel, riskLevel));
+            conditions.push(eq(vwAthleteRiskOverview.riskLevel, riskLevel));
         }
 
         return db
             .select()
-            .from(athleteRiskScores)
+            .from(vwAthleteRiskOverview)
             .where(and(...conditions))
-            .orderBy(desc(athleteRiskScores.overallRiskScore))
+            .orderBy(desc(vwAthleteRiskOverview.overallRiskScore))
             .limit(limit);
     }
 
@@ -143,55 +195,29 @@ export class AnalyticsService {
     }
 
     /**
-     * Get detailed athlete information with risk scores
+     * Get detailed athlete information with risk scores - Using vw_athlete_risk_overview
      */
     static async getAthletesWithRiskScores(
         boxId: string,
         riskLevel?: RiskLevel,
         limit: number = 50
     ) {
-        const riskConditions = [eq(athleteRiskScores.boxId, boxId)];
+        const conditions = [eq(vwAthleteRiskOverview.boxId, boxId)];
 
         if (riskLevel) {
-            riskConditions.push(eq(athleteRiskScores.riskLevel, riskLevel));
+            conditions.push(eq(vwAthleteRiskOverview.riskLevel, riskLevel));
         }
 
-        // Get at-risk athletes first
-        const atRiskAthletes = await db
-            .select()
-            .from(athleteRiskScores)
-            .where(and(...riskConditions))
-            .orderBy(desc(athleteRiskScores.overallRiskScore))
-            .limit(limit);
-
-        // Extract membership IDs to get detailed info
-        const membershipIds = atRiskAthletes.map(athlete => athlete.membershipId);
-
-        if (membershipIds.length === 0) {
-            return [];
-        }
-
-        // Get detailed membership and user info
         return db
-            .select({
-                riskScore: athleteRiskScores,
-                membership: boxMemberships,
-                user: user,
-                profile: userProfiles,
-            })
-            .from(athleteRiskScores)
-            .innerJoin(boxMemberships, eq(athleteRiskScores.membershipId, boxMemberships.id))
-            .innerJoin(user, eq(boxMemberships.userId, user.id))
-            .leftJoin(userProfiles, eq(user.id, userProfiles.userId))
-            .where(and(
-                eq(athleteRiskScores.boxId, boxId),
-                inArray(athleteRiskScores.membershipId, membershipIds)
-            ))
-            .orderBy(desc(athleteRiskScores.overallRiskScore));
+            .select()
+            .from(vwAthleteRiskOverview)
+            .where(and(...conditions))
+            .orderBy(desc(vwAthleteRiskOverview.overallRiskScore))
+            .limit(limit);
     }
 
     /**
-     * Get athlete engagement leaderboard for a box
+     * Get athlete engagement leaderboard for a box - Using mv_athlete_engagement_scores
      */
     static async getEngagementLeaderboard(
         boxId: string,
@@ -201,55 +227,15 @@ export class AnalyticsService {
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - days);
 
-        // Get all active athletes in the box
-        const athletes = await db
-            .select({
-                id: boxMemberships.id,
-                userId: boxMemberships.userId,
-                publicId: boxMemberships.publicId,
-            })
-            .from(boxMemberships)
+        return db
+            .select()
+            .from(mvAthleteEngagementScores)
             .where(and(
-                eq(boxMemberships.boxId, boxId),
-                eq(boxMemberships.isActive, true),
-                eq(boxMemberships.role, 'athlete')
-            ));
-
-        const athleteIds = athletes.map(a => a.id);
-
-        if (athleteIds.length === 0) {
-            return [];
-        }
-
-        // Calculate engagement scores for all athletes
-        const engagementScores = await Promise.all(
-            athleteIds.map(membershipId =>
-                this.calculateAthleteEngagementScore(boxId, membershipId, days)
-            )
-        );
-
-        // Combine with user information
-        return Promise.all(
-            engagementScores.map(async (score, index) => {
-                const athlete = athletes[index];
-                const userInfo = await db
-                    .select()
-                    .from(user)
-                    .where(eq(user.id, athlete.userId))
-                    .then(rows => rows[0]);
-
-                return {
-                    score: score.score,
-                    metrics: score.metrics,
-                    membershipId: athlete.id,
-                    publicId: athlete.publicId,
-                    user: userInfo,
-                    period: score.period,
-                };
-            })
-        ).then(results =>
-            results.sort((a, b) => b.score - a.score).slice(0, limit)
-        );
+                eq(mvAthleteEngagementScores.boxId, boxId),
+                gte(mvAthleteEngagementScores.calculatedAt, startDate)
+            ))
+            .orderBy(desc(mvAthleteEngagementScores.engagementScore))
+            .limit(limit);
     }
 
     /**
@@ -270,6 +256,17 @@ export class AnalyticsService {
                 eq(boxMemberships.isActive, true),
                 inArray(boxMemberships.role, ['head_coach', 'coach'])
             ));
+    }
+
+    /**
+     * Get coach performance metrics - Using mv_coach_performance
+     */
+    static async getCoachPerformance(boxId: string) {
+        return db
+            .select()
+            .from(mvCoachPerformance)
+            .where(eq(mvCoachPerformance.boxId, boxId))
+            .orderBy(desc(mvCoachPerformance.successfulInterventions));
     }
 
     /**
@@ -360,7 +357,7 @@ export class AnalyticsService {
     }
 
     /**
-     * Get comprehensive box health dashboard
+     * Get comprehensive box health dashboard - Using mv_box_health_dashboard
      */
     static async getBoxHealthDashboard(
         boxId: string,
@@ -369,16 +366,35 @@ export class AnalyticsService {
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - days);
 
-        // Get various metrics in parallel
-        const [
-            riskDistribution,
-            alertStats,
-            interventionStats,
-            wellnessTrends,
-            attendanceTrends,
-            performanceTrends
-        ] = await Promise.all([
-            // Risk distribution - unchanged
+        // Get the latest dashboard data
+        const dashboardData = await db
+            .select()
+            .from(mvBoxHealthDashboard)
+            .where(and(
+                eq(mvBoxHealthDashboard.boxId, boxId),
+                gte(mvBoxHealthDashboard.periodStart, startDate)
+            ))
+            .orderBy(desc(mvBoxHealthDashboard.periodStart))
+            .limit(1);
+
+        if (!dashboardData[0]) {
+            // Return empty metrics if no data found
+            return {
+                riskDistribution: [],
+                alertStats: [],
+                interventionStats: [],
+                wellnessTrends: { avgEnergy: null, avgSleep: null, avgStress: null },
+                attendanceTrends: { totalCheckins: 0, uniqueAthletes: 0 },
+                performanceTrends: { totalPrs: 0, avgImprovement: null },
+                dateRange: { start: startDate, end: new Date() }
+            };
+        }
+
+        const data = dashboardData[0];
+
+        // Get additional stats that aren't in the materialized view
+        const [riskDistribution, alertStats, interventionStats] = await Promise.all([
+            // Risk distribution
             db
                 .select({
                     riskLevel: athleteRiskScores.riskLevel,
@@ -391,7 +407,7 @@ export class AnalyticsService {
                 ))
                 .groupBy(athleteRiskScores.riskLevel),
 
-            // Alert statistics - unchanged
+            // Alert statistics
             db
                 .select({
                     alertType: athleteAlerts.alertType,
@@ -405,7 +421,7 @@ export class AnalyticsService {
                 ))
                 .groupBy(athleteAlerts.alertType, athleteAlerts.status),
 
-            // Intervention statistics - FIX: Filter out null outcomes
+            // Intervention statistics - Filter out null outcomes
             db
                 .select({
                     interventionType: athleteInterventions.interventionType,
@@ -416,56 +432,28 @@ export class AnalyticsService {
                 .where(and(
                     eq(athleteInterventions.boxId, boxId),
                     gte(athleteInterventions.interventionDate, startDate),
-                    // Add condition to filter out null outcomes
                     sql`${athleteInterventions.outcome} IS NOT NULL`
                 ))
                 .groupBy(athleteInterventions.interventionType, athleteInterventions.outcome),
-
-            // Wellness trends - FIX: Convert string averages to numbers
-            db
-                .select({
-                    avgEnergy: sql<number>`CAST(AVG(${athleteWellnessCheckins.energyLevel}) AS DECIMAL(10,2))`,
-                    avgSleep: sql<number>`CAST(AVG(${athleteWellnessCheckins.sleepQuality}) AS DECIMAL(10,2))`,
-                    avgStress: sql<number>`CAST(AVG(${athleteWellnessCheckins.stressLevel}) AS DECIMAL(10,2))`,
-                })
-                .from(athleteWellnessCheckins)
-                .where(and(
-                    eq(athleteWellnessCheckins.boxId, boxId),
-                    gte(athleteWellnessCheckins.checkinDate, startDate)
-                )),
-
-            // Attendance trends - unchanged
-            db
-                .select({
-                    totalCheckins: count(),
-                    uniqueAthletes: count(athleteWellnessCheckins.membershipId),
-                })
-                .from(athleteWellnessCheckins)
-                .where(and(
-                    eq(athleteWellnessCheckins.boxId, boxId),
-                    gte(athleteWellnessCheckins.checkinDate, startDate)
-                )),
-
-            // Performance trends - FIX: Convert string average to number
-            db
-                .select({
-                    totalPrs: count(),
-                    avgImprovement: sql<number>`CAST(AVG(CAST(${athletePrs.value} AS NUMERIC)) AS DECIMAL(10,2))`,
-                })
-                .from(athletePrs)
-                .where(and(
-                    eq(athletePrs.boxId, boxId),
-                    gte(athletePrs.achievedAt, startDate)
-                ))
         ]);
 
         return {
             riskDistribution,
             alertStats,
             interventionStats,
-            wellnessTrends: wellnessTrends[0],
-            attendanceTrends: attendanceTrends[0],
-            performanceTrends: performanceTrends[0],
+            wellnessTrends: {
+                avgEnergy: data.avgEnergy ? parseFloat(data.avgEnergy) : null,
+                avgSleep: data.avgSleep ? parseFloat(data.avgSleep) : null,
+                avgStress: data.avgStress ? parseFloat(data.avgStress) : null,
+            },
+            attendanceTrends: {
+                totalCheckins: data.totalCheckins || 0,
+                uniqueAthletes: data.uniqueAthletes || 0,
+            },
+            performanceTrends: {
+                totalPrs: data.totalPrs || 0,
+                avgImprovement: data.avgImprovement ? parseFloat(data.avgImprovement) : null,
+            },
             dateRange: {
                 start: startDate,
                 end: new Date(),
@@ -474,7 +462,7 @@ export class AnalyticsService {
     }
 
     /**
-     * Calculate athlete engagement score
+     * Calculate athlete engagement score - Using mv_athlete_engagement_scores
      */
     static async calculateAthleteEngagementScore(
         boxId: string,
@@ -484,83 +472,50 @@ export class AnalyticsService {
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - days);
 
-        // Get various engagement metrics
-        const [
-            checkinCount,
-            prCount,
-            attendanceCount,
-            benchmarkCount
-        ] = await Promise.all([
-            // Wellness check-ins
-            db
-                .select({ count: count() })
-                .from(athleteWellnessCheckins)
-                .where(and(
-                    eq(athleteWellnessCheckins.boxId, boxId),
-                    eq(athleteWellnessCheckins.membershipId, membershipId),
-                    gte(athleteWellnessCheckins.checkinDate, startDate)
-                )),
+        // Get engagement data from materialized view
+        const engagementData = await db
+            .select()
+            .from(mvAthleteEngagementScores)
+            .where(and(
+                eq(mvAthleteEngagementScores.boxId, boxId),
+                eq(mvAthleteEngagementScores.membershipId, membershipId),
+                gte(mvAthleteEngagementScores.calculatedAt, startDate)
+            ))
+            .orderBy(desc(mvAthleteEngagementScores.calculatedAt))
+            .limit(1);
 
-            // Personal records
-            db
-                .select({ count: count() })
-                .from(athletePrs)
-                .where(and(
-                    eq(athletePrs.boxId, boxId),
-                    eq(athletePrs.membershipId, membershipId),
-                    gte(athletePrs.achievedAt, startDate)
-                )),
+        if (!engagementData[0]) {
+            return {
+                score: 0,
+                metrics: { checkins: 0, prs: 0, attendance: 0, benchmarks: 0 },
+                breakdown: { checkinScore: 0, prScore: 0, attendanceScore: 0, benchmarkScore: 0 },
+                period: { days, start: startDate, end: new Date() }
+            };
+        }
 
-            // Class attendance
-            db
-                .select({ count: count() })
-                .from(wodAttendance)
-                .where(and(
-                    eq(wodAttendance.boxId, boxId),
-                    eq(wodAttendance.membershipId, membershipId),
-                    gte(wodAttendance.wodTime, startDate)
-                )),
+        const data = engagementData[0];
 
-            // Benchmark workouts
-            db
-                .select({ count: count() })
-                .from(athleteBenchmarks)
-                .where(and(
-                    eq(athleteBenchmarks.boxId, boxId),
-                    eq(athleteBenchmarks.membershipId, membershipId),
-                    gte(athleteBenchmarks.completedAt, startDate)
-                ))
-        ]);
-
-        const metrics: AthleteEngagementMetrics = {
-            checkins: checkinCount[0].count,
-            prs: prCount[0].count,
-            attendance: attendanceCount[0].count,
-            benchmarks: benchmarkCount[0].count,
-        };
-
-        // Calculate engagement score (weighted average)
-        const maxPossibleDays = days;
-        const checkinScore = (metrics.checkins / maxPossibleDays) * 30; // 30% weight
-        const prScore = Math.min(metrics.prs / 5, 1) * 25; // 25% weight (max 5 PRs)
-        const attendanceScore = (metrics.attendance / maxPossibleDays) * 35; // 35% weight
-        const benchmarkScore = Math.min(metrics.benchmarks / 3, 1) * 10; // 10% weight (max 3 benchmarks)
-
-        const engagementScore = Math.round(
-            checkinScore + prScore + attendanceScore + benchmarkScore
-        );
-
-        const breakdown: EngagementBreakdown = {
-            checkinScore: Math.round(checkinScore),
-            prScore: Math.round(prScore),
-            attendanceScore: Math.round(attendanceScore),
-            benchmarkScore: Math.round(benchmarkScore),
-        };
+        // Provide default values for potentially null fields
+        const checkinCount = data.checkinCount || 0;
+        const prCount = data.prCount || 0;
+        const attendanceCount = data.attendanceCount || 0;
+        const benchmarkCount = data.benchmarkCount || 0;
+        const engagementScore = data.engagementScore || 0;
 
         return {
             score: engagementScore,
-            metrics,
-            breakdown,
+            metrics: {
+                checkins: checkinCount,
+                prs: prCount,
+                attendance: attendanceCount,
+                benchmarks: benchmarkCount,
+            },
+            breakdown: {
+                checkinScore: Math.round((checkinCount / days) * 30),
+                prScore: Math.round(Math.min(prCount / 5, 1) * 25),
+                attendanceScore: Math.round((attendanceCount / days) * 35),
+                benchmarkScore: Math.round(Math.min(benchmarkCount / 3, 1) * 10),
+            },
             period: {
                 days,
                 start: startDate,
@@ -570,7 +525,7 @@ export class AnalyticsService {
     }
 
     /**
-     * Get correlation between wellness and performance
+     * Get correlation between wellness and performance - Using vw_wellness_performance_correlation
      */
     static async getWellnessPerformanceCorrelation(
         boxId: string,
@@ -579,40 +534,27 @@ export class AnalyticsService {
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - days);
 
-        // Get wellness and performance data
         const correlationData = await db
-            .select({
-                energyLevel: athleteWellnessCheckins.energyLevel,
-                sleepQuality: athleteWellnessCheckins.sleepQuality,
-                stressLevel: athleteWellnessCheckins.stressLevel,
-                prValue: sql<number>`CAST(${athletePrs.value} AS NUMERIC)`,
-            })
-            .from(athleteWellnessCheckins)
-            .innerJoin(
-                athletePrs,
-                and(
-                    eq(athleteWellnessCheckins.membershipId, athletePrs.membershipId),
-                    eq(athleteWellnessCheckins.boxId, athletePrs.boxId),
-                    sql`DATE(${athleteWellnessCheckins.checkinDate}) = DATE(${athletePrs.achievedAt})`
-                )
-            )
+            .select()
+            .from(vwWellnessPerformanceCorrelation)
             .where(and(
-                eq(athleteWellnessCheckins.boxId, boxId),
-                gte(athleteWellnessCheckins.checkinDate, startDate)
-            ))
-            .limit(1000);
+                eq(vwWellnessPerformanceCorrelation.boxId, boxId)
+            ));
 
-        // Calculate simple correlations
-        const energyValues = correlationData.map(d => d.energyLevel);
-        const sleepValues = correlationData.map(d => d.sleepQuality);
-        const stressValues = correlationData.map(d => d.stressLevel);
-        const prValues = correlationData.map(d => d.prValue);
+        // Handle potential null values
+        const energyCorrelation = correlationData[0]?.energyPrCorrelation ?
+            parseFloat(correlationData[0].energyPrCorrelation) : 0;
+        const sleepCorrelation = correlationData[0]?.sleepPrCorrelation ?
+            parseFloat(correlationData[0].sleepPrCorrelation) : 0;
+        const stressCorrelation = correlationData[0]?.stressPrCorrelation ?
+            parseFloat(correlationData[0].stressPrCorrelation) : 0;
+        const dataPoints = correlationData[0]?.dataPoints || 0;
 
         return {
-            energyCorrelation: this.calculateSimpleCorrelation(energyValues, prValues),
-            sleepCorrelation: this.calculateSimpleCorrelation(sleepValues, prValues),
-            stressCorrelation: this.calculateSimpleCorrelation(stressValues, prValues),
-            sampleSize: correlationData.length,
+            energyCorrelation,
+            sleepCorrelation,
+            stressCorrelation,
+            sampleSize: dataPoints,
             period: {
                 days,
                 start: startDate,
@@ -641,5 +583,183 @@ export class AnalyticsService {
         }
 
         return numerator / Math.sqrt(denominatorX * denominatorY);
+    }
+
+    static async getMonthlyRetention(
+        boxId: string,
+        months: number = 12
+    ): Promise<RetentionData[]> {
+        const startDate = new Date();
+        startDate.setMonth(startDate.getMonth() - months);
+
+        return db
+            .select()
+            .from(mvMonthlyRetention)
+            .where(and(
+                eq(mvMonthlyRetention.boxId, boxId),
+                gte(mvMonthlyRetention.cohortMonth, startDate)
+            ))
+            .orderBy(desc(mvMonthlyRetention.cohortMonth), desc(mvMonthlyRetention.activityMonth));
+    }
+
+    /**
+     * Get athlete progress timeline - Using mv_athlete_progress
+     */
+    static async getAthleteProgressTimeline(
+        boxId: string,
+        membershipId: string,
+        limit: number = 50
+    ) {
+        return db
+            .select()
+            .from(mvAthleteProgress)
+            .where(and(
+                eq(mvAthleteProgress.boxId, boxId),
+                eq(mvAthleteProgress.membershipId, membershipId)
+            ))
+            .orderBy(desc(mvAthleteProgress.eventDate))
+            .limit(limit);
+    }
+
+    /**
+     * Get box subscription health - Using vw_box_subscription_health
+     */
+    static async getBoxSubscriptionHealth(boxId: string): Promise<SubscriptionHealth | null> {
+        const result = await db
+            .select()
+            .from(vwBoxSubscriptionHealth)
+            .where(eq(vwBoxSubscriptionHealth.boxId, boxId))
+            .limit(1);
+
+        return result[0] || null;
+    }
+
+    /**
+     * Get wellness trends over time - Using mv_wellness_trends
+     */
+    static async getWellnessTrends(
+        boxId: string,
+        membershipId: string,
+        weeks: number = 12
+    ): Promise<WellnessTrend[]> {
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - (weeks * 7));
+
+        return db
+            .select()
+            .from(mvWellnessTrends)
+            .where(and(
+                eq(mvWellnessTrends.boxId, boxId),
+                eq(mvWellnessTrends.membershipId, membershipId),
+                gte(mvWellnessTrends.weekStart, startDate)
+            ))
+            .orderBy(desc(mvWellnessTrends.weekStart));
+    }
+
+    /**
+     * Get recent activity feed (simple query - no view needed)
+     */
+    static async getRecentActivityFeed(
+        boxId: string,
+        limit: number = 50
+    ) {
+        const prs = await db
+            .select({
+                type: sql`'pr'`.as('type'),
+                date: athletePrs.achievedAt,
+                membershipId: athletePrs.membershipId,
+                boxId: athletePrs.boxId,
+                description: sql`'PR Set'`.as('description')
+            })
+            .from(athletePrs)
+            .where(eq(athletePrs.boxId, boxId))
+            .orderBy(desc(athletePrs.achievedAt))
+            .limit(limit);
+
+        const benchmarks = await db
+            .select({
+                type: sql`'benchmark'`.as('type'),
+                date: athleteBenchmarks.completedAt,
+                membershipId: athleteBenchmarks.membershipId,
+                boxId: athleteBenchmarks.boxId,
+                description: sql`'Benchmark Completed'`.as('description')
+            })
+            .from(athleteBenchmarks)
+            .where(eq(athleteBenchmarks.boxId, boxId))
+            .orderBy(desc(athleteBenchmarks.completedAt))
+            .limit(limit);
+
+        const checkins = await db
+            .select({
+                type: sql`'checkin'`.as('type'),
+                date: athleteWellnessCheckins.checkinDate,
+                membershipId: athleteWellnessCheckins.membershipId,
+                boxId: athleteWellnessCheckins.boxId,
+                description: sql`'Wellness Checkin'`.as('description')
+            })
+            .from(athleteWellnessCheckins)
+            .where(eq(athleteWellnessCheckins.boxId, boxId))
+            .orderBy(desc(athleteWellnessCheckins.checkinDate))
+            .limit(limit);
+
+        // Combine and sort all activities
+        const allActivities = [...prs, ...benchmarks, ...checkins];
+        allActivities.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+        return allActivities.slice(0, limit);
+    }
+
+    /**
+     * Get basic box statistics (simple query - no view needed)
+     */
+    static async getBasicBoxStatistics(boxId: string) {
+        const stats = await db
+            .select({
+                activeAthletes: count().filterWhere(
+                    and(
+                        eq(boxMemberships.boxId, boxId),
+                        eq(boxMemberships.role, 'athlete'),
+                        eq(boxMemberships.isActive, true)
+                    )
+                ),
+                activeCoaches: count().filterWhere(
+                    and(
+                        eq(boxMemberships.boxId, boxId),
+                        inArray(boxMemberships.role, ['head_coach', 'coach']),
+                        eq(boxMemberships.isActive, true)
+                    )
+                ),
+                newMembers30d: count().filterWhere(
+                    and(
+                        eq(boxMemberships.boxId, boxId),
+                        gte(boxMemberships.joinedAt, new Date(Date.now() - 30 * 24 * 60 * 60 * 1000))
+                    )
+                ),
+                avgCheckinStreak: sql<number>`COALESCE(AVG(${boxMemberships.checkinStreak}) FILTER (WHERE ${boxMemberships.role} = 'athlete'), 0)`
+            })
+            .from(boxMemberships)
+            .where(eq(boxMemberships.boxId, boxId));
+
+        return stats[0] || {
+            activeAthletes: 0,
+            activeCoaches: 0,
+            newMembers30d: 0,
+            avgCheckinStreak: 0
+        };
+    }
+
+    /**
+     * Get recent interventions (simple query - no view needed)
+     */
+    static async getRecentInterventions(
+        boxId: string,
+        limit: number = 20
+    ) {
+        return db
+            .select()
+            .from(athleteInterventions)
+            .where(eq(athleteInterventions.boxId, boxId))
+            .orderBy(desc(athleteInterventions.interventionDate))
+            .limit(limit);
     }
 }
