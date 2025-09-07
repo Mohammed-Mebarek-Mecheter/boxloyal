@@ -16,7 +16,7 @@ async function seedDatabase() {
             {
                 name: "Starter",
                 tier: "starter" as const,
-                memberLimit: 200,
+                athleteLimit: 200,
                 coachLimit: 5,
                 monthlyPrice: 15000, // $150 in cents
                 annualPrice: 144000, // $1440 in cents (20% discount)
@@ -31,7 +31,7 @@ async function seedDatabase() {
             {
                 name: "Performance",
                 tier: "performance" as const,
-                memberLimit: 500,
+                athleteLimit: 500,
                 coachLimit: 15,
                 monthlyPrice: 25000,
                 annualPrice: 240000,
@@ -46,7 +46,7 @@ async function seedDatabase() {
             {
                 name: "Elite",
                 tier: "elite" as const,
-                memberLimit: 1000,
+                athleteLimit: 1000,
                 coachLimit: 50,
                 monthlyPrice: 40000,
                 annualPrice: 384000,

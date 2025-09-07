@@ -40,7 +40,7 @@ export const subscriptionPlans = pgTable("subscription_plans", {
     id: uuid("id").defaultRandom().primaryKey(),
     name: text("name").notNull(),
     tier: text("tier").notNull(), // "starter", "performance", "elite"
-    memberLimit: integer("member_limit").notNull(), // Athletes limit
+    athleteLimit: integer("athlete_limit").notNull(), // Athletes limit
     coachLimit: integer("coach_limit").notNull(),
     monthlyPrice: integer("monthly_price").notNull(), // in cents
     annualPrice: integer("annual_price").notNull(), // in cents

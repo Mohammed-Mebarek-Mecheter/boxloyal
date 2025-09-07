@@ -9,7 +9,8 @@ import {
     pgEnum,
     uuid,
     index,
-    json
+    json,
+    date
 } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 import { boxes, boxMemberships } from "./core";
@@ -247,21 +248,40 @@ export const wodAttendance = pgTable("wod_attendance", {
 
     // WOD details
     wodName: text("wod_name").notNull(),
+    // Scheduled start time of the WOD class (when the class was supposed to begin)
     wodTime: timestamp("wod_time").notNull(),
 
-    // Attendance
-    status: text("status").notNull(), // "attended", "no_show", "late_cancel"
-    checkedInAt: timestamp("checked_in_at"),
+    // Attendance date (the actual calendar date when attendance occurred)
+    wodAttendanceDate: date("attendance_date").notNull(),
 
-    // Coach
+    // Attendance status
+    status: text("status").notNull(), // "attended", "no_show", "late_cancel", "excused"
+    checkedInAt: timestamp("checked_in_at"), // When athlete actually checked in
+
+    // Performance metrics (for attended sessions)
+    durationMinutes: integer("duration_minutes"), // Actual time spent in workout
+    scaled: boolean("scaled").default(false), // Whether workout was scaled
+    rx: boolean("rx").default(false), // Whether performed as prescribed
+    score: text("score"), // Workout result (time, rounds, weight, etc.)
+    notes: text("notes"), // Coach or athlete notes about the session
+
+    // Coach information
     coachMembershipId: uuid("coach_membership_id").references(() => boxMemberships.id),
 
+    // Timestamps
     createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
-    boxAthleteWodIdx: index("wod_attendance_box_athlete_wod_idx").on(
-        table.boxId, table.membershipId, table.wodTime
+    // Index for quick lookup by box, athlete, and date
+    boxAthleteDateIdx: index("wod_attendance_box_athlete_date_idx").on(
+        table.boxId, table.membershipId, table.wodAttendanceDate
     ),
+    // Index for class scheduling and reporting
     wodTimeIdx: index("wod_attendance_wod_time_idx").on(table.wodTime),
+    // Index for attendance date-based reporting
+    attendanceDateIdx: index("wod_attendance_date_idx").on(table.wodAttendanceDate),
+    // Index for status filtering
+    statusIdx: index("wod_attendance_status_idx").on(table.status),
 }));
 
 // Athlete badges and achievements

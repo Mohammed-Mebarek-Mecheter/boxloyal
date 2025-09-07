@@ -6,8 +6,23 @@ import { env } from "cloudflare:workers";
 import { admin } from "better-auth/plugins/admin";
 import { polar, checkout, portal, usage, webhooks } from "@polar-sh/better-auth";
 import { Polar } from "@polar-sh/sdk";
-import { schema } from "@/db/schema";
+import {boxStatusEnum, schema, subscriptionTierEnum} from "@/db/schema";
 import { eq, and, isNull, lt } from "drizzle-orm";
+
+// Helper functions to ensure type safety
+function toSubscriptionTier(tier: string): typeof subscriptionTierEnum.enumValues[number] {
+    if (["starter", "performance", "elite"].includes(tier)) {
+        return tier as typeof subscriptionTierEnum.enumValues[number];
+    }
+    return "starter"; // default fallback
+}
+
+function toBoxStatus(status: string): typeof boxStatusEnum.enumValues[number] {
+    if (["active", "suspended", "trial_expired"].includes(status)) {
+        return status as typeof boxStatusEnum.enumValues[number];
+    }
+    return "active"; // default fallback
+}
 
 // --- Constants ---
 // Map Polar product IDs to internal tiers (consider making this configurable or derived from DB)
@@ -46,7 +61,10 @@ if (!env.POLAR_WEBHOOK_SECRET) {
 const authConfig: BetterAuthOptions = {
     database: drizzleAdapter(db, {
         provider: "pg",
-        schema: schema,
+        schema: {
+            ...schema,
+            user: schema.user,
+        },
     }),
     trustedOrigins: [env.CORS_ORIGIN],
     emailAndPassword: {
@@ -92,7 +110,7 @@ const authConfig: BetterAuthOptions = {
                 // Find the box associated with this user during signup (likely owner)
                 // This assumes user metadata or request context holds box info
                 // You might need to refine this based on your signup flow
-                const boxId = user.metadata?.boxId || request?.headers?.get('x-box-id'); // Example: pass box ID via header or metadata
+                const boxId = (user as any).metadata?.boxId || request?.headers?.get('x-box-id'); // Example: pass box ID via header or metadata
 
                 return {
                     email: user.email,
@@ -352,13 +370,11 @@ async function activateSubscription(subscriptionData: any) {
 
     await db.update(schema.boxes)
         .set({
-            subscriptionStatus: subscriptionData.status, // Use Polar status directly
-            subscriptionTier: tier,
-            subscriptionStartsAt: effectiveStartDate, // Set when paid period effectively starts
-            subscriptionEndsAt: new Date(subscriptionData.current_period_end * 1000), // Set initial end date
-            athleteLimit: plan.memberLimit,
-            coachLimit: plan.coachLimit,
-            status: boxStatus, // Reflect Polar status in box status
+            subscriptionStatus: subscriptionData.status,
+            subscriptionTier: toSubscriptionTier(tier),
+            subscriptionStartsAt: effectiveStartDate,
+            subscriptionEndsAt: new Date(subscriptionData.current_period_end * 1000),
+            status: toBoxStatus(boxStatus),
             polarSubscriptionId: subscriptionData.id,
             updatedAt: new Date(),
         })
@@ -426,7 +442,7 @@ async function updateSubscription(subscriptionData: any) {
     // If plan/tier changed, update limits
     if (plan && tier && tier !== existingSubscription.planTier) {
         updateFields.subscriptionTier = tier;
-        updateFields.athleteLimit = plan.memberLimit;
+        updateFields.athleteLimit = plan.athleteLimit;
         updateFields.coachLimit = plan.coachLimit;
     }
 

@@ -1,6 +1,5 @@
 // routers/index.ts
 import { router } from "@/lib/trpc";
-import { authRouter } from "./auth";
 import { boxRouter } from "./box";
 import { athleteRouter } from "./athlete";
 import { analyticsRouter } from "./analytics";
@@ -8,7 +7,6 @@ import { billingRouter } from "./billing";
 import { adminRouter } from "./admin";
 
 export const appRouter = router({
-    auth: authRouter,
     box: boxRouter,
     athlete: athleteRouter,
     analytics: analyticsRouter,

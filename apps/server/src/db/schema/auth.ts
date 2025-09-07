@@ -1,14 +1,16 @@
 // db/schema/auth.ts
-import { pgTable, text, timestamp, boolean } from "drizzle-orm/pg-core";
+import {pgTable, text, timestamp, boolean, json} from "drizzle-orm/pg-core";
 
+// db/schema/auth.ts
 export const user = pgTable("user", {
-	id: text("id").primaryKey(),
-	name: text("name").notNull(),
-	email: text("email").notNull().unique(),
-	emailVerified: boolean("email_verified").notNull(),
-	image: text("image"),
-	createdAt: timestamp("created_at").notNull(),
-	updatedAt: timestamp("updated_at").notNull(),
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    email: text("email").notNull().unique(),
+    emailVerified: boolean("email_verified").notNull(),
+    image: text("image"),
+    metadata: json("metadata"),
+    createdAt: timestamp("created_at").notNull(),
+    updatedAt: timestamp("updated_at").notNull(),
 });
 
 export const session = pgTable("session", {

@@ -1,4 +1,5 @@
-﻿import { router, protectedProcedure } from "@/lib/trpc";
+﻿// routers/billing.ts
+import { router, protectedProcedure } from "@/lib/trpc";
 import { z } from "zod";
 import { requireBoxOwner } from "@/lib/permissions";
 import { db } from "@/db";
@@ -9,14 +10,120 @@ import {
     boxes,
     boxMemberships,
     usageEvents,
-    customerProfiles,
-    orders,
-    billingEvents,
+    orders
 } from "@/db/schema";
-import { eq, and, desc, gte, count, sql, lt, isNull, or } from "drizzle-orm";
+import {eq, and, desc, gte, count, lt, or, SQL} from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
-import { env } from "cloudflare:workers";
 
+// --- Move Helper Functions Outside the Router ---
+
+// --- Extracted Core Logic for Grace Period Checks ---
+// This is a regular async function, not a tRPC procedure
+async function checkAndTriggerGracePeriodsCore(boxId: string, limitEvents: Array<{ eventType: string }>) { // Added type for limitEvents
+    try {
+        const box = await db.query.boxes.findFirst({
+            where: eq(boxes.id, boxId),
+        });
+
+        if (!box) {
+            console.warn(`Box not found for grace period check: ${boxId}`);
+            return;
+        }
+
+        const plan = await db.query.subscriptionPlans.findFirst({
+            where: eq(subscriptionPlans.tier, box.subscriptionTier),
+        });
+
+        if (!plan) {
+            console.warn(`Subscription plan not found for box tier ${box.subscriptionTier} during grace period check.`);
+            return;
+        }
+
+        // --- Refactored Logic to Reduce Duplication ---
+        // Define the checks needed: type, count, limit, and reason
+        const checks = [
+            {
+                type: "athlete",
+                condition: limitEvents.some(e => e.eventType === "athlete_added"),
+                getCount: async () => {
+                    const [result] = await db.select({ count: count() }).from(boxMemberships)
+                        .where(and(eq(boxMemberships.boxId, boxId), eq(boxMemberships.role, "athlete"), eq(boxMemberships.isActive, true)));
+                    return result?.count ?? 0;
+                },
+                limit: plan.athleteLimit,
+                reason: "athlete_limit_exceeded"
+            },
+            {
+                type: "coach",
+                condition: limitEvents.some(e => e.eventType === "coach_added"),
+                getCount: async () => {
+                    const [result] = await db.select({ count: count() }).from(boxMemberships)
+                        .where(and(eq(boxMemberships.boxId, boxId), eq(boxMemberships.role, "coach"), eq(boxMemberships.isActive, true)));
+                    return result?.count ?? 0;
+                },
+                limit: plan.coachLimit,
+                reason: "coach_limit_exceeded"
+            }
+        ];
+
+        // Iterate through the checks
+        for (const check of checks) {
+            if (check.condition) {
+                const currentCount = await check.getCount();
+                console.log(`Checking ${check.type} limit for box ${boxId}: ${currentCount}/${check.limit}`);
+
+                if (currentCount > check.limit) {
+                    const reason = check.reason;
+                    console.log(`Triggering grace period for box ${boxId} due to ${reason}`);
+
+                    // Check if there's already an active grace period for this specific reason
+                    const existingGracePeriod = await db.query.gracePeriods.findFirst({
+                        where: and(
+                            eq(gracePeriods.boxId, boxId),
+                            eq(gracePeriods.resolved, false),
+                            gte(gracePeriods.endsAt, new Date()),
+                            eq(gracePeriods.reason, reason)
+                        ),
+                    });
+
+                    if (!existingGracePeriod) {
+                        const gracePeriodDays = 14; // Or use a map like before: { [reason: string]: number }
+                        const endsAt = new Date();
+                        endsAt.setDate(endsAt.getDate() + gracePeriodDays);
+
+                        const [newGracePeriod] = await db.insert(gracePeriods).values({
+                            boxId: boxId,
+                            reason: reason,
+                            endsAt,
+                        }).returning();
+
+                        // Track usage event for grace period creation
+                        await db.insert(usageEvents).values({
+                            boxId: boxId,
+                            eventType: "grace_period_triggered",
+                            quantity: 1,
+                            metadata: {
+                                reason: reason,
+                                gracePeriodId: newGracePeriod?.id,
+                                endsAt: endsAt.toISOString(),
+                            },
+                        });
+                        console.log(`New grace period created: ${newGracePeriod?.id}`);
+                    } else {
+                        console.log(`Existing grace period found for reason '${reason}': ${existingGracePeriod.id}`);
+                    }
+                }
+            }
+        }
+        // --- End Refactored Logic ---
+
+    } catch (error) {
+        console.error("Error in checkAndTriggerGracePeriodsCore:", error);
+        // Depending on requirements, you might want to throw or handle differently
+    }
+}
+
+// --- The tRPC Router ---
 export const billingRouter = router({
     // Enhanced subscription retrieval with better data aggregation
     getSubscription: protectedProcedure
@@ -56,7 +163,7 @@ export const billingRouter = router({
             });
 
             // Count active members by role
-            const [athleteCount, coachCount] = await Promise.all([
+            const [athleteCountResult, coachCountResult] = await Promise.all([
                 db
                     .select({ count: count() })
                     .from(boxMemberships)
@@ -85,16 +192,16 @@ export const billingRouter = router({
             });
 
             // Calculate usage percentages and limits
-            const athleteLimit = currentPlan?.memberLimit || box.athleteLimit || 0;
-            const coachLimit = currentPlan?.coachLimit || box.coachLimit || 0;
+            const athleteLimit = currentPlan?.athleteLimit ?? 0;
+            const coachLimit = currentPlan?.coachLimit ?? 0;
 
             const usage = {
-                athletes: athleteCount[0].count,
-                coaches: coachCount[0].count,
-                athletesPercentage: athleteLimit > 0 ? Math.round((athleteCount[0].count / athleteLimit) * 100) : 0,
-                coachesPercentage: coachLimit > 0 ? Math.round((coachCount[0].count / coachLimit) * 100) : 0,
-                isAthleteOverLimit: athleteCount[0].count > athleteLimit,
-                isCoachOverLimit: coachCount[0].count > coachLimit,
+                athletes: athleteCountResult[0]?.count ?? 0,
+                coaches: coachCountResult[0]?.count ?? 0,
+                athletesPercentage: athleteLimit > 0 ? Math.round(((athleteCountResult[0]?.count ?? 0) / athleteLimit) * 100) : 0,
+                coachesPercentage: coachLimit > 0 ? Math.round(((coachCountResult[0]?.count ?? 0) / coachLimit) * 100) : 0,
+                isAthleteOverLimit: (athleteCountResult[0]?.count ?? 0) > athleteLimit,
+                isCoachOverLimit: (coachCountResult[0]?.count ?? 0) > coachLimit,
                 athleteLimit,
                 coachLimit,
             };
@@ -142,29 +249,30 @@ export const billingRouter = router({
         }),
 
     // Enhanced plans retrieval with pricing calculations
-    getPlans: protectedProcedure.query(async () => {
-        const plans = await db.query.subscriptionPlans.findMany({
-            where: eq(subscriptionPlans.isActive, true),
-            orderBy: subscriptionPlans.monthlyPrice,
-        });
+    getPlans: protectedProcedure
+        .query(async () => {
+            const plans = await db.query.subscriptionPlans.findMany({
+                where: eq(subscriptionPlans.isActive, true),
+                orderBy: subscriptionPlans.monthlyPrice,
+            });
 
-        // Add calculated savings for annual plans
-        return plans.map(plan => {
-            const annualSavings = plan.annualPrice ?
-                (plan.monthlyPrice * 12) - plan.annualPrice : 0;
-            const annualSavingsPercentage = annualSavings > 0 ?
-                Math.round((annualSavings / (plan.monthlyPrice * 12)) * 100) : 0;
+            // Add calculated savings for annual plans
+            return plans.map(plan => {
+                const annualSavings = (plan.annualPrice !== null && plan.annualPrice !== undefined) ?
+                    (plan.monthlyPrice * 12) - plan.annualPrice : 0;
+                const annualSavingsPercentage = annualSavings > 0 ?
+                    Math.round((annualSavings / (plan.monthlyPrice * 12)) * 100) : 0;
 
-            return {
-                ...plan,
-                features: JSON.parse(plan.features),
-                annualSavings,
-                annualSavingsPercentage,
-                monthlyPriceFormatted: `$${(plan.monthlyPrice / 100).toFixed(2)}`,
-                annualPriceFormatted: plan.annualPrice ? `$${(plan.annualPrice / 100).toFixed(2)}` : null,
-            };
-        });
-    }),
+                return {
+                    ...plan,
+                    features: JSON.parse(plan.features || '[]'), // Handle potential null/undefined features string
+                    annualSavings,
+                    annualSavingsPercentage,
+                    monthlyPriceFormatted: `$${(plan.monthlyPrice / 100).toFixed(2)}`,
+                    annualPriceFormatted: (plan.annualPrice !== null && plan.annualPrice !== undefined) ? `$${(plan.annualPrice / 100).toFixed(2)}` : null,
+                };
+            });
+        }),
 
     // Enhanced usage limits checking with predictive analytics
     checkUsageLimits: protectedProcedure
@@ -173,6 +281,8 @@ export const billingRouter = router({
             type: z.enum(["athlete", "coach"]),
         }))
         .query(async ({ ctx, input }) => {
+            // Note: This procedure might be callable by members, not just owners.
+            // The permission check below reflects that.
             const userBoxes = ctx.userBoxes || [];
             const hasAccess = userBoxes.some(ub => ub.box.id === input.boxId);
 
@@ -183,7 +293,7 @@ export const billingRouter = router({
                 });
             }
 
-            const [box, currentCount] = await Promise.all([
+            const [boxResult, currentCountResult] = await Promise.all([
                 db.query.boxes.findFirst({
                     where: eq(boxes.id, input.boxId),
                 }),
@@ -197,20 +307,20 @@ export const billingRouter = router({
                     ))
             ]);
 
-            if (!box) {
+            if (!boxResult) {
                 throw new TRPCError({ code: "NOT_FOUND", message: "Box not found" });
             }
 
             const plan = await db.query.subscriptionPlans.findFirst({
-                where: eq(subscriptionPlans.tier, box.subscriptionTier),
+                where: eq(subscriptionPlans.tier, boxResult.subscriptionTier),
             });
 
             if (!plan) {
                 throw new TRPCError({ code: "NOT_FOUND", message: "Subscription plan not found" });
             }
 
-            const limit = input.type === "athlete" ? plan.memberLimit : plan.coachLimit;
-            const current = currentCount[0].count;
+            const limit = input.type === "athlete" ? plan.athleteLimit : plan.coachLimit;
+            const current = currentCountResult[0]?.count ?? 0;
             const isOverLimit = current >= limit;
 
             // Check for existing grace period
@@ -226,7 +336,7 @@ export const billingRouter = router({
             const thirtyDaysAgo = new Date();
             thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-            const [recentAdditions] = await db
+            const [recentAdditionsResult] = await db
                 .select({ count: count() })
                 .from(boxMemberships)
                 .where(and(
@@ -246,9 +356,9 @@ export const billingRouter = router({
                 gracePeriod: existingGracePeriod,
                 upgradeRequired: isOverLimit && !existingGracePeriod,
                 trend: {
-                    recentAdditions: recentAdditions.count,
-                    projectedMonthly: Math.round(recentAdditions.count * (30 / 30)), // Normalize to monthly
-                    willExceedSoon: !isOverLimit && (current + recentAdditions.count) >= limit,
+                    recentAdditions: recentAdditionsResult?.count ?? 0,
+                    projectedMonthly: Math.round((recentAdditionsResult?.count ?? 0) * (30 / 30)), // Normalize to monthly
+                    willExceedSoon: !isOverLimit && ((current + (recentAdditionsResult?.count ?? 0)) >= limit),
                 },
             };
         }),
@@ -257,13 +367,13 @@ export const billingRouter = router({
     triggerGracePeriod: protectedProcedure
         .input(z.object({
             boxId: z.string(),
-            reason: z.enum(["athlete_limit_exceeded", "coach_limit_exceeded", "trial_ending", "payment_failed"]),
+            reason: z.enum(["athlete_limit_exceeded", "coach_limit_exceeded", "trial_ending", "payment_failed", "subscription_canceled"]),
             customMessage: z.string().optional(),
         }))
         .mutation(async ({ ctx, input }) => {
             await requireBoxOwner(ctx, input.boxId);
 
-            // Check if there's already an active grace period
+            // Check if there's already an active grace period for *any* reason
             const existingGracePeriod = await db.query.gracePeriods.findFirst({
                 where: and(
                     eq(gracePeriods.boxId, input.boxId),
@@ -277,15 +387,17 @@ export const billingRouter = router({
             }
 
             // Create new grace period with dynamic duration based on reason
-            const gracePeriodDays = {
+            const gracePeriodDaysMap: Record<string, number> = {
                 "athlete_limit_exceeded": 14,
                 "coach_limit_exceeded": 14,
                 "trial_ending": 7,
                 "payment_failed": 3,
+                "subscription_canceled": 0, // Or a small number
             };
 
+            const daysToAdd = gracePeriodDaysMap[input.reason] ?? 7; // Default fallback
             const endsAt = new Date();
-            endsAt.setDate(endsAt.getDate() + gracePeriodDays[input.reason]);
+            endsAt.setDate(endsAt.getDate() + daysToAdd);
 
             const [gracePeriod] = await db
                 .insert(gracePeriods)
@@ -303,7 +415,7 @@ export const billingRouter = router({
                 quantity: 1,
                 metadata: {
                     reason: input.reason,
-                    gracePeriodId: gracePeriod.id,
+                    gracePeriodId: gracePeriod?.id,
                     endsAt: endsAt.toISOString(),
                     customMessage: input.customMessage,
                 },
@@ -327,6 +439,9 @@ export const billingRouter = router({
             metadata: z.record(z.string(), z.any()).optional(),
         }))
         .mutation(async ({ ctx, input }) => {
+            // Note: Permission check might depend on who can track usage.
+            // Assuming members can track their own actions, owners/coaches for others.
+            // The check below is a basic one. Refine as needed.
             const userBoxes = ctx.userBoxes || [];
             const hasAccess = userBoxes.some(ub => ub.box.id === input.boxId);
 
@@ -371,7 +486,7 @@ export const billingRouter = router({
 
             if (limitEvents.length > 0) {
                 // Check if we need to trigger a grace period
-                await this.checkAndTriggerGracePeriods(input.boxId, limitEvents);
+                await checkAndTriggerGracePeriodsCore(input.boxId, limitEvents);
             }
 
             return {
@@ -393,19 +508,28 @@ export const billingRouter = router({
         .query(async ({ ctx, input }) => {
             await requireBoxOwner(ctx, input.boxId);
 
-            const startDate = input.startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // 30 days ago
+            const startDate =
+                input.startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // last 30 days
             const endDate = input.endDate || new Date();
 
-            let whereConditions = [
+            // Build where conditions
+            const whereConditions: SQL<unknown>[] = [
                 eq(usageEvents.boxId, input.boxId),
                 gte(usageEvents.createdAt, startDate),
-                lt(usageEvents.createdAt, endDate)
+                lt(usageEvents.createdAt, endDate),
             ];
 
             if (input.eventTypes && input.eventTypes.length > 0) {
-                whereConditions.push(
-                    sql`${usageEvents.eventType} = ANY(${input.eventTypes})`
+                const eventTypeConditions = input.eventTypes.map((et) =>
+                    eq(usageEvents.eventType, et)
                 );
+
+                const eventTypeFilter =
+                    eventTypeConditions.length === 1
+                        ? eventTypeConditions[0]
+                        : or(...eventTypeConditions);
+
+                whereConditions.push(eventTypeFilter as SQL<unknown>);
             }
 
             const usageData = await db.query.usageEvents.findMany({
@@ -414,49 +538,53 @@ export const billingRouter = router({
             });
 
             // Aggregate by event type
-            const aggregated = usageData.reduce((acc, event) => {
-                if (!acc[event.eventType]) {
-                    acc[event.eventType] = 0;
-                }
-                acc[event.eventType] += event.quantity;
-                return acc;
-            }, {} as Record<string, number>);
+            const aggregated: Record<string, number> = usageData.reduce(
+                (acc, event) => {
+                    acc[event.eventType] = (acc[event.eventType] || 0) + event.quantity;
+                    return acc;
+                },
+                {} as Record<string, number>
+            );
 
             // Group by time period for trend analysis
-            const timeGrouped = usageData.reduce((acc, event) => {
-                let key: string;
-                const date = new Date(event.createdAt);
+            const timeGrouped: Record<string, Record<string, number>> = usageData.reduce(
+                (acc, event) => {
+                    let key: string;
+                    const date = new Date(event.createdAt);
 
-                switch (input.groupBy) {
-                    case "day":
-                        key = date.toISOString().split('T')[0];
-                        break;
-                    case "week":
-                        const weekStart = new Date(date);
-                        weekStart.setDate(date.getDate() - date.getDay());
-                        key = weekStart.toISOString().split('T')[0];
-                        break;
-                    case "month":
-                        key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-                        break;
-                    default:
-                        key = date.toISOString().split('T')[0];
-                }
+                    switch (input.groupBy) {
+                        case "week": {
+                            const weekStart = new Date(date);
+                            weekStart.setDate(date.getDate() - date.getDay()); // Sunday start
+                            key = weekStart.toISOString().split("T")[0];
+                            break;
+                        }
+                        case "month":
+                            key = `${date.getFullYear()}-${String(
+                                date.getMonth() + 1
+                            ).padStart(2, "0")}`;
+                            break;
+                        default:
+                            key = date.toISOString().split("T")[0];
+                    }
 
-                if (!acc[key]) {
-                    acc[key] = {};
-                }
-                if (!acc[key][event.eventType]) {
-                    acc[key][event.eventType] = 0;
-                }
-                acc[key][event.eventType] += event.quantity;
-                return acc;
-            }, {} as Record<string, Record<string, number>>);
+                    if (!acc[key]) acc[key] = {};
+                    acc[key][event.eventType] =
+                        (acc[key][event.eventType] || 0) + event.quantity;
+
+                    return acc;
+                },
+                {} as Record<string, Record<string, number>>
+            );
 
             // Calculate trends and growth rates
             const eventTypes = Object.keys(aggregated);
-            const trends = eventTypes.map(eventType => {
-                const eventData = usageData.filter(e => e.eventType === eventType);
+            const trends = eventTypes.map((eventType) => {
+                const eventData = usageData.filter((e) => e.eventType === eventType);
+                if (eventData.length === 0) {
+                    return { eventType, total: 0, growthRate: 0, trend: "stable" };
+                }
+
                 const midPoint = Math.floor(eventData.length / 2);
                 const firstHalf = eventData.slice(0, midPoint);
                 const secondHalf = eventData.slice(midPoint);
@@ -464,15 +592,21 @@ export const billingRouter = router({
                 const firstHalfSum = firstHalf.reduce((sum, e) => sum + e.quantity, 0);
                 const secondHalfSum = secondHalf.reduce((sum, e) => sum + e.quantity, 0);
 
-                const growthRate = firstHalfSum > 0
-                    ? ((secondHalfSum - firstHalfSum) / firstHalfSum) * 100
-                    : 0;
+                const growthRate =
+                    firstHalfSum > 0
+                        ? ((secondHalfSum - firstHalfSum) / firstHalfSum) * 100
+                        : 0;
 
                 return {
                     eventType,
                     total: aggregated[eventType],
                     growthRate: Math.round(growthRate * 100) / 100,
-                    trend: growthRate > 0 ? "increasing" : growthRate < 0 ? "decreasing" : "stable",
+                    trend:
+                        growthRate > 0
+                            ? "increasing"
+                            : growthRate < 0
+                                ? "decreasing"
+                                : "stable",
                 };
             });
 
@@ -484,12 +618,22 @@ export const billingRouter = router({
                 totalEvents: usageData.length,
                 dateRange: { startDate, endDate },
                 summary: {
-                    mostActiveEventType: eventTypes.reduce((a, b) =>
-                        aggregated[a] > aggregated[b] ? a : b, eventTypes[0]
-                    ),
-                    averageEventsPerDay: Math.round(usageData.length /
-                        Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24))
-                    ),
+                    mostActiveEventType:
+                        eventTypes.length > 0
+                            ? eventTypes.reduce((a, b) =>
+                                aggregated[a] > aggregated[b] ? a : b
+                            )
+                            : "",
+                    averageEventsPerDay:
+                        usageData.length > 0
+                            ? Math.round(
+                                usageData.length /
+                                Math.ceil(
+                                    (endDate.getTime() - startDate.getTime()) /
+                                    (1000 * 60 * 60 * 24)
+                                )
+                            )
+                            : 0,
                 },
             };
         }),
@@ -504,7 +648,7 @@ export const billingRouter = router({
         .query(async ({ ctx, input }) => {
             await requireBoxOwner(ctx, input.boxId);
 
-            const [ordersData, totalCount] = await Promise.all([
+            const [ordersData, totalCountResult] = await Promise.all([
                 db.query.orders.findMany({
                     where: eq(orders.boxId, input.boxId),
                     orderBy: desc(orders.createdAt),
@@ -521,10 +665,12 @@ export const billingRouter = router({
                     .where(eq(orders.boxId, input.boxId))
             ]);
 
+            const totalCount = totalCountResult[0]?.count ?? 0;
+
             // Calculate totals and statistics
             const totalSpent = ordersData
                 .filter(order => order.status === "paid")
-                .reduce((sum, order) => sum + order.amount, 0);
+                .reduce((sum, order) => sum + (order.amount ?? 0), 0); // Handle potential undefined amount
 
             const monthlySpend = ordersData
                 .filter(order => {
@@ -533,24 +679,24 @@ export const billingRouter = router({
                     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
                     return orderDate >= thirtyDaysAgo && order.status === "paid";
                 })
-                .reduce((sum, order) => sum + order.amount, 0);
+                .reduce((sum, order) => sum + (order.amount ?? 0), 0); // Handle potential undefined amount
 
             return {
                 orders: ordersData.map(order => ({
                     ...order,
-                    amountFormatted: `${(order.amount / 100).toFixed(2)}`,
+                    amountFormatted: `$${((order.amount ?? 0) / 100).toFixed(2)}`, // Handle potential undefined amount
                 })),
                 pagination: {
-                    total: totalCount[0].count,
+                    total: totalCount,
                     limit: input.limit,
                     offset: input.offset,
-                    hasMore: (input.offset + input.limit) < totalCount[0].count,
+                    hasMore: (input.offset + input.limit) < totalCount,
                 },
                 summary: {
                     totalSpent,
-                    totalSpentFormatted: `${(totalSpent / 100).toFixed(2)}`,
+                    totalSpentFormatted: `$${(totalSpent / 100).toFixed(2)}`,
                     monthlySpend,
-                    monthlySpendFormatted: `${(monthlySpend / 100).toFixed(2)}`,
+                    monthlySpendFormatted: `$${(monthlySpend / 100).toFixed(2)}`,
                     averageOrderValue: ordersData.length > 0
                         ? Math.round(totalSpent / ordersData.length)
                         : 0,
@@ -587,7 +733,7 @@ export const billingRouter = router({
                 .set({
                     cancelAtPeriodEnd: input.cancelAtPeriodEnd,
                     canceledAt: input.cancelAtPeriodEnd ? null : new Date(),
-                    status: input.cancelAtPeriodEnd ? "active" : "canceled",
+                    status: input.cancelAtPeriodEnd ? "active" : "canceled", // Status update logic
                     updatedAt: new Date(),
                 })
                 .where(eq(subscriptions.id, activeSubscription.id));
@@ -605,14 +751,9 @@ export const billingRouter = router({
                 },
             });
 
-            // If immediate cancellation, trigger grace period
-            if (!input.cancelAtPeriodEnd) {
-                await this.triggerGracePeriod({
-                    boxId: input.boxId,
-                    reason: "subscription_canceled",
-                    customMessage: input.reason,
-                });
-            }
+            // Note: The actual access revocation for immediate cancellation
+            // should primarily be handled by the Polar webhook (onSubscriptionRevoked)
+            // and the logic in lib/auth.ts. This procedure updates the local state.
 
             return {
                 success: true,
@@ -631,29 +772,36 @@ export const billingRouter = router({
         .mutation(async ({ ctx, input }) => {
             await requireBoxOwner(ctx, input.boxId);
 
+            // Find a subscription that is scheduled for cancellation (cancelAtPeriodEnd = true)
+            // It might still have status 'active' or already 'canceled' depending on timing.
             const canceledSubscription = await db.query.subscriptions.findFirst({
                 where: and(
                     eq(subscriptions.boxId, input.boxId),
-                    eq(subscriptions.cancelAtPeriodEnd, true),
-                    or(
-                        eq(subscriptions.status, "active"),
-                        eq(subscriptions.status, "canceled")
-                    )
+                    eq(subscriptions.cancelAtPeriodEnd, true)
+                    // Optionally, you might want to check status too, but cancelAtPeriodEnd is key
+                    // or(
+                    //     eq(subscriptions.status, "active"), // Scheduled cancel, period ongoing
+                    //     eq(subscriptions.status, "canceled") // Scheduled cancel, period ended
+                    // )
                 ),
             });
 
             if (!canceledSubscription) {
                 throw new TRPCError({
                     code: "NOT_FOUND",
-                    message: "No subscription to reactivate found",
+                    message: "No subscription scheduled for cancellation found to reactivate",
                 });
             }
 
-            // Update subscription
+            // Update subscription to cancel the scheduled cancellation
             await db.update(subscriptions)
                 .set({
                     cancelAtPeriodEnd: false,
                     canceledAt: null,
+                    // The status should ideally be confirmed by a Polar webhook.
+                    // If the period hasn't ended, it's likely still 'active'.
+                    // If it has ended, reactivation might involve Polar API calls not shown here.
+                    // For now, assume it becomes/should become 'active'.
                     status: "active",
                     updatedAt: new Date(),
                 })
@@ -670,112 +818,32 @@ export const billingRouter = router({
                 },
             });
 
+            // --- Resolve any active grace periods related to the scheduled cancellation ---
+            const gracePeriodsToResolve = await db
+                .select()
+                .from(gracePeriods)
+                .where(and(
+                    eq(gracePeriods.boxId, input.boxId),
+                    eq(gracePeriods.resolved, false),
+                    gte(gracePeriods.endsAt, new Date()),
+                    eq(gracePeriods.reason, "subscription_canceled") // Match the reason used in triggerGracePeriod
+                ));
+
+            for (const gp of gracePeriodsToResolve) {
+                await db.update(gracePeriods)
+                    .set({
+                        resolved: true,
+                        resolvedAt: new Date(),
+                        resolution: "subscription_reactivated"
+                    })
+                    .where(eq(gracePeriods.id, gp.id));
+                console.log(`Resolved grace period ${gp.id} due to reactivation.`);
+            }
+            // --- End Grace Period Resolution ---
+
             return {
                 success: true,
                 subscription: canceledSubscription,
             };
         }),
-
-    // Helper method for checking and triggering grace periods
-    checkAndTriggerGracePeriods: async (boxId: string, limitEvents: any[]) => {
-        const box = await db.query.boxes.findFirst({
-            where: eq(boxes.id, boxId),
-        });
-
-        if (!box) return;
-
-        const plan = await db.query.subscriptionPlans.findFirst({
-            where: eq(subscriptionPlans.tier, box.subscriptionTier),
-        });
-
-        if (!plan) return;
-
-        // Check athlete limit
-        if (limitEvents.some(e => e.eventType === "athlete_added")) {
-            const [athleteCount] = await db
-                .select({ count: count() })
-                .from(boxMemberships)
-                .where(and(
-                    eq(boxMemberships.boxId, boxId),
-                    eq(boxMemberships.role, "athlete"),
-                    eq(boxMemberships.isActive, true)
-                ));
-
-            if (athleteCount.count > plan.memberLimit) {
-                await billingRouter.triggerGracePeriod({
-                    boxId,
-                    reason: "athlete_limit_exceeded",
-                });
-            }
-        }
-
-        // Check coach limit
-        if (limitEvents.some(e => e.eventType === "coach_added")) {
-            const [coachCount] = await db
-                .select({ count: count() })
-                .from(boxMemberships)
-                .where(and(
-                    eq(boxMemberships.boxId, boxId),
-                    eq(boxMemberships.role, "coach"),
-                    eq(boxMemberships.isActive, true)
-                ));
-
-            if (coachCount.count > plan.coachLimit) {
-                await billingRouter.triggerGracePeriod({
-                    boxId,
-                    reason: "coach_limit_exceeded",
-                });
-            }
-        }
-    },
 });
-
-// Enhanced helper function with better error handling
-function getProductIdFromSlug(slug: string): string {
-    const productMap: Record<string, string> = {
-        "starter": env.POLAR_STARTER_PRODUCT_ID,
-        "starter-annual": env.POLAR_STARTER_ANNUAL_PRODUCT_ID,
-        "performance": env.POLAR_PERFORMANCE_PRODUCT_ID,
-        "performance-annual": env.POLAR_PERFORMANCE_ANNUAL_PRODUCT_ID,
-        "elite": env.POLAR_ELITE_PRODUCT_ID,
-        "elite-annual": env.POLAR_ELITE_ANNUAL_PRODUCT_ID,
-    };
-
-    const productId = productMap[slug];
-
-    if (!productId) {
-        throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: `Invalid product slug: ${slug}`,
-        });
-    }
-
-    return productId;
-}
-
-// Enhanced helper functions for better data consistency
-async function validateBoxAccess(userId: string, boxId: string, requiredRole?: string) {
-    const membership = await db.query.boxMemberships.findFirst({
-        where: and(
-            eq(boxMemberships.userId, userId),
-            eq(boxMemberships.boxId, boxId),
-            eq(boxMemberships.isActive, true)
-        ),
-    });
-
-    if (!membership) {
-        throw new TRPCError({
-            code: "FORBIDDEN",
-            message: "Not a member of this box",
-        });
-    }
-
-    if (requiredRole && membership.role !== requiredRole && membership.role !== "owner") {
-        throw new TRPCError({
-            code: "FORBIDDEN",
-            message: `Insufficient permissions. Required: ${requiredRole}`,
-        });
-    }
-
-    return membership;
-}
