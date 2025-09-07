@@ -11,9 +11,9 @@ import {
     boxMemberships,
     athleteBenchmarks,
     wodAttendance,
-    user
+    user, userProfiles
 } from "@/db/schema";
-import { eq, desc, and, gte, lte, count, avg, sql } from "drizzle-orm";
+import {eq, desc, and, gte, lte, count, avg, sql, inArray} from "drizzle-orm";
 
 // Types for better type safety
 export type RiskLevel = "low" | "medium" | "high" | "critical";
@@ -37,7 +37,7 @@ export interface EngagementBreakdown {
 export interface BoxHealthMetrics {
     riskDistribution: Array<{ riskLevel: string; count: number }>;
     alertStats: Array<{ alertType: string; status: string; count: number }>;
-    interventionStats: Array<{ interventionType: string; outcome: string; count: number }>;
+    interventionStats: Array<{ interventionType: string; outcome: string | null; count: number }>;
     wellnessTrends: {
         avgEnergy: number | null;
         avgSleep: number | null;
@@ -140,6 +140,136 @@ export class AnalyticsService {
             ))
             .orderBy(desc(athleteInterventions.interventionDate))
             .limit(limit);
+    }
+
+    /**
+     * Get detailed athlete information with risk scores
+     */
+    static async getAthletesWithRiskScores(
+        boxId: string,
+        riskLevel?: RiskLevel,
+        limit: number = 50
+    ) {
+        const riskConditions = [eq(athleteRiskScores.boxId, boxId)];
+
+        if (riskLevel) {
+            riskConditions.push(eq(athleteRiskScores.riskLevel, riskLevel));
+        }
+
+        // Get at-risk athletes first
+        const atRiskAthletes = await db
+            .select()
+            .from(athleteRiskScores)
+            .where(and(...riskConditions))
+            .orderBy(desc(athleteRiskScores.overallRiskScore))
+            .limit(limit);
+
+        // Extract membership IDs to get detailed info
+        const membershipIds = atRiskAthletes.map(athlete => athlete.membershipId);
+
+        if (membershipIds.length === 0) {
+            return [];
+        }
+
+        // Get detailed membership and user info
+        return db
+            .select({
+                riskScore: athleteRiskScores,
+                membership: boxMemberships,
+                user: user,
+                profile: userProfiles,
+            })
+            .from(athleteRiskScores)
+            .innerJoin(boxMemberships, eq(athleteRiskScores.membershipId, boxMemberships.id))
+            .innerJoin(user, eq(boxMemberships.userId, user.id))
+            .leftJoin(userProfiles, eq(user.id, userProfiles.userId))
+            .where(and(
+                eq(athleteRiskScores.boxId, boxId),
+                inArray(athleteRiskScores.membershipId, membershipIds)
+            ))
+            .orderBy(desc(athleteRiskScores.overallRiskScore));
+    }
+
+    /**
+     * Get athlete engagement leaderboard for a box
+     */
+    static async getEngagementLeaderboard(
+        boxId: string,
+        days: number = 30,
+        limit: number = 20
+    ) {
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - days);
+
+        // Get all active athletes in the box
+        const athletes = await db
+            .select({
+                id: boxMemberships.id,
+                userId: boxMemberships.userId,
+                publicId: boxMemberships.publicId,
+            })
+            .from(boxMemberships)
+            .where(and(
+                eq(boxMemberships.boxId, boxId),
+                eq(boxMemberships.isActive, true),
+                eq(boxMemberships.role, 'athlete')
+            ));
+
+        const athleteIds = athletes.map(a => a.id);
+
+        if (athleteIds.length === 0) {
+            return [];
+        }
+
+        // Calculate engagement scores for all athletes
+        const engagementScores = await Promise.all(
+            athleteIds.map(membershipId =>
+                this.calculateAthleteEngagementScore(boxId, membershipId, days)
+            )
+        );
+
+        // Combine with user information
+        return Promise.all(
+            engagementScores.map(async (score, index) => {
+                const athlete = athletes[index];
+                const userInfo = await db
+                    .select()
+                    .from(user)
+                    .where(eq(user.id, athlete.userId))
+                    .then(rows => rows[0]);
+
+                return {
+                    score: score.score,
+                    metrics: score.metrics,
+                    membershipId: athlete.id,
+                    publicId: athlete.publicId,
+                    user: userInfo,
+                    period: score.period,
+                };
+            })
+        ).then(results =>
+            results.sort((a, b) => b.score - a.score).slice(0, limit)
+        );
+    }
+
+    /**
+     * Get coach information for a box
+     */
+    static async getBoxCoaches(boxId: string) {
+        return db
+            .select({
+                membership: boxMemberships,
+                user: user,
+                profile: userProfiles,
+            })
+            .from(boxMemberships)
+            .innerJoin(user, eq(boxMemberships.userId, user.id))
+            .leftJoin(userProfiles, eq(user.id, userProfiles.userId))
+            .where(and(
+                eq(boxMemberships.boxId, boxId),
+                eq(boxMemberships.isActive, true),
+                inArray(boxMemberships.role, ['head_coach', 'coach'])
+            ));
     }
 
     /**
@@ -248,7 +378,7 @@ export class AnalyticsService {
             attendanceTrends,
             performanceTrends
         ] = await Promise.all([
-            // Risk distribution
+            // Risk distribution - unchanged
             db
                 .select({
                     riskLevel: athleteRiskScores.riskLevel,
@@ -261,7 +391,7 @@ export class AnalyticsService {
                 ))
                 .groupBy(athleteRiskScores.riskLevel),
 
-            // Alert statistics
+            // Alert statistics - unchanged
             db
                 .select({
                     alertType: athleteAlerts.alertType,
@@ -275,7 +405,7 @@ export class AnalyticsService {
                 ))
                 .groupBy(athleteAlerts.alertType, athleteAlerts.status),
 
-            // Intervention statistics
+            // Intervention statistics - FIX: Filter out null outcomes
             db
                 .select({
                     interventionType: athleteInterventions.interventionType,
@@ -285,16 +415,18 @@ export class AnalyticsService {
                 .from(athleteInterventions)
                 .where(and(
                     eq(athleteInterventions.boxId, boxId),
-                    gte(athleteInterventions.interventionDate, startDate)
+                    gte(athleteInterventions.interventionDate, startDate),
+                    // Add condition to filter out null outcomes
+                    sql`${athleteInterventions.outcome} IS NOT NULL`
                 ))
                 .groupBy(athleteInterventions.interventionType, athleteInterventions.outcome),
 
-            // Wellness trends
+            // Wellness trends - FIX: Convert string averages to numbers
             db
                 .select({
-                    avgEnergy: avg(athleteWellnessCheckins.energyLevel),
-                    avgSleep: avg(athleteWellnessCheckins.sleepQuality),
-                    avgStress: avg(athleteWellnessCheckins.stressLevel),
+                    avgEnergy: sql<number>`CAST(AVG(${athleteWellnessCheckins.energyLevel}) AS DECIMAL(10,2))`,
+                    avgSleep: sql<number>`CAST(AVG(${athleteWellnessCheckins.sleepQuality}) AS DECIMAL(10,2))`,
+                    avgStress: sql<number>`CAST(AVG(${athleteWellnessCheckins.stressLevel}) AS DECIMAL(10,2))`,
                 })
                 .from(athleteWellnessCheckins)
                 .where(and(
@@ -302,7 +434,7 @@ export class AnalyticsService {
                     gte(athleteWellnessCheckins.checkinDate, startDate)
                 )),
 
-            // Attendance trends
+            // Attendance trends - unchanged
             db
                 .select({
                     totalCheckins: count(),
@@ -314,11 +446,11 @@ export class AnalyticsService {
                     gte(athleteWellnessCheckins.checkinDate, startDate)
                 )),
 
-            // Performance trends
+            // Performance trends - FIX: Convert string average to number
             db
                 .select({
                     totalPrs: count(),
-                    avgImprovement: avg(sql`CAST(${athletePrs.value} AS NUMERIC)`),
+                    avgImprovement: sql<number>`CAST(AVG(CAST(${athletePrs.value} AS NUMERIC)) AS DECIMAL(10,2))`,
                 })
                 .from(athletePrs)
                 .where(and(
