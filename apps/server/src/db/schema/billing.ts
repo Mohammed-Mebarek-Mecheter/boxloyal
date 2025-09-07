@@ -85,14 +85,15 @@ export const customerProfiles = pgTable("customer_profiles", {
 export const subscriptions = pgTable("subscriptions", {
     id: uuid("id").defaultRandom().primaryKey(),
     boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
-    customerProfileId: uuid("customer_profile_id").references(() => customerProfiles.id, { onDelete: "cascade" }).notNull(), // Make non-nullable if always linked
+    customerProfileId: uuid("customer_profile_id").references(() => customerProfiles.id, { onDelete: "cascade" }).notNull(),
 
     // Polar subscription details
     polarSubscriptionId: text("polar_subscription_id").notNull().unique(),
     polarProductId: text("polar_product_id").notNull(),
 
-    // Subscription state
-    status: text("status").notNull(), // "active", "canceled", "past_due", "unpaid", "incomplete", "incomplete_expired", "trialing"
+    // Subscription state - reference plan ID instead of tier
+    planId: uuid("plan_id").references(() => subscriptionPlans.id).notNull(),
+    status: text("status").notNull(),
     currentPeriodStart: timestamp("current_period_start").notNull(),
     currentPeriodEnd: timestamp("current_period_end").notNull(),
     cancelAtPeriodEnd: boolean("cancel_at_period_end").default(false).notNull(),
@@ -100,16 +101,12 @@ export const subscriptions = pgTable("subscriptions", {
 
     // Pricing
     currency: text("currency").notNull(),
-    amount: integer("amount").notNull(), // in cents
-    interval: text("interval").notNull(), // "month", "year"
+    amount: integer("amount").notNull(),
+    interval: text("interval").notNull(),
 
     // Metadata
-    metadata: json("metadata"), // Additional data from Polar
+    metadata: json("metadata"),
 
-    // --- New Fields for Enhanced Tracking ---
-    // Track the specific plan tier associated with this subscription for easier lookup
-    planTier: text("plan_tier").references(() => subscriptionPlans.tier), // References subscriptionPlans.tier
-    // Timestamp for when the subscription was last synced with Polar
     lastSyncedAt: timestamp("last_synced_at").defaultNow().notNull(),
 
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -119,7 +116,7 @@ export const subscriptions = pgTable("subscriptions", {
     polarSubscriptionIdx: index("subscriptions_polar_subscription_idx").on(table.polarSubscriptionId),
     statusIdx: index("subscriptions_status_idx").on(table.status),
     currentPeriodEndIdx: index("subscriptions_current_period_end_idx").on(table.currentPeriodEnd),
-    planTierIdx: index("subscriptions_plan_tier_idx").on(table.planTier),
+    planIdIdx: index("subscriptions_plan_id_idx").on(table.planId),
     cancelAtPeriodEndIdx: index("subscriptions_cancel_at_period_end_idx").on(table.cancelAtPeriodEnd),
 }));
 

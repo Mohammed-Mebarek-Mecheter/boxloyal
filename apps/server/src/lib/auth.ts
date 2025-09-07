@@ -7,7 +7,7 @@ import { admin } from "better-auth/plugins/admin";
 import { polar, checkout, portal, usage, webhooks } from "@polar-sh/better-auth";
 import { Polar } from "@polar-sh/sdk";
 import {boxStatusEnum, schema, subscriptionTierEnum} from "@/db/schema";
-import { eq, and, isNull, lt } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 // Helper functions to ensure type safety
 function toSubscriptionTier(tier: string): typeof subscriptionTierEnum.enumValues[number] {
@@ -200,12 +200,6 @@ const authConfig: BetterAuthOptions = {
                             console.error("Error handling subscription revocation:", error);
                         }
                     },
-                    // --- Handle Trial End ---
-                    // Polar might send a specific event or it might transition to 'incomplete'/'canceled'
-                    // We'll use onSubscriptionUpdated to catch trial end transitions
-                    // Or rely on scheduled checks (see below)
-                    // If Polar has a specific trial end event, add it here.
-                    // onSubscriptionTrialEnd?: async (payload) => { ... }
                 }),
             ],
         })
@@ -219,12 +213,6 @@ async function getCustomerProfileByPolarId(polarCustomerId: string) {
         where: eq(schema.customerProfiles.polarCustomerId, polarCustomerId)
     });
 }
-
-async function getCustomerProfileId(polarCustomerId: string): Promise<string | null> {
-    const profile = await getCustomerProfileByPolarId(polarCustomerId);
-    return profile?.id || null;
-}
-
 async function getSubscriptionId(polarSubscriptionId: string): Promise<string | null> {
     const subscription = await db.query.subscriptions.findFirst({
         where: eq(schema.subscriptions.polarSubscriptionId, polarSubscriptionId)
@@ -271,8 +259,7 @@ async function handleOrderPaid(order: any) {
     }
 
     const subscriptionId = order.subscription_id ? await getSubscriptionId(order.subscription_id) : null;
-    const productId = order.product_id;
-    const tier = PRODUCT_ID_TO_TIER_MAP[productId] || "starter"; // Default fallback
+    const productId = order.product_id;// Default fallback
 
     // Insert order record
     await db.insert(schema.orders).values({
@@ -342,7 +329,7 @@ async function activateSubscription(subscriptionData: any) {
         amount: subscriptionData.amount,
         interval: subscriptionData.recurring_interval,
         metadata: subscriptionData.metadata ? JSON.stringify(subscriptionData.metadata) : null,
-        planTier: tier, // Store the tier for easy lookup
+        planId: plan.id, // Reference the plan ID instead of tier
         lastSyncedAt: new Date(),
         updatedAt: new Date(),
     }).onConflictDoUpdate({
@@ -354,7 +341,7 @@ async function activateSubscription(subscriptionData: any) {
             cancelAtPeriodEnd: subscriptionData.cancel_at_period_end || false,
             canceledAt: subscriptionData.canceled_at ? new Date(subscriptionData.canceled_at * 1000) : null,
             amount: subscriptionData.amount,
-            planTier: tier,
+            planId: plan.id, // Update plan ID instead of tier
             lastSyncedAt: new Date(),
             updatedAt: new Date(),
         }
@@ -405,9 +392,12 @@ async function updateSubscription(subscriptionData: any) {
     let plan = tier ? await db.query.subscriptionPlans.findFirst({ where: eq(schema.subscriptionPlans.tier, tier) }) : null;
 
     // If plan changed or tier not found from product ID, try to infer from subscription metadata or existing record
-    if (!plan && existingSubscription.planTier) {
-        tier = existingSubscription.planTier;
-        plan = await db.query.subscriptionPlans.findFirst({ where: eq(schema.subscriptionPlans.tier, tier) });
+    if (!plan && existingSubscription.planId) {
+        // Get plan by ID if we have it
+        plan = await db.query.subscriptionPlans.findFirst({ where: eq(schema.subscriptionPlans.id, existingSubscription.planId) });
+        if (plan) {
+            tier = plan.tier;
+        }
     }
 
     // Update subscription record
@@ -420,7 +410,7 @@ async function updateSubscription(subscriptionData: any) {
             canceledAt: subscriptionData.canceled_at ? new Date(subscriptionData.canceled_at * 1000) : null,
             amount: subscriptionData.amount,
             polarProductId: productId,
-            planTier: tier || existingSubscription.planTier, // Keep existing if not changed/unknown
+            planId: plan?.id || existingSubscription.planId, // Keep existing if not changed/unknown
             lastSyncedAt: new Date(),
             updatedAt: new Date(),
         })
@@ -439,8 +429,7 @@ async function updateSubscription(subscriptionData: any) {
         updatedAt: new Date(),
     };
 
-    // If plan/tier changed, update limits
-    if (plan && tier && tier !== existingSubscription.planTier) {
+    if (plan && plan.id !== existingSubscription.planId) {
         updateFields.subscriptionTier = tier;
         updateFields.athleteLimit = plan.athleteLimit;
         updateFields.coachLimit = plan.coachLimit;
@@ -537,145 +526,5 @@ async function revokeSubscription(subscriptionData: any) {
         })
         .where(eq(schema.boxes.id, customerProfile.boxId));
 }
-
-// --- Access Control Utility (to be used in your application middleware or route guards) ---
-// This function checks if a box should have access based on its current state
-export async function checkBoxAccess(boxId: string): Promise<{ hasAccess: boolean; reason?: string }> {
-    const box = await db.query.boxes.findFirst({ where: eq(schema.boxes.id, boxId) });
-
-    if (!box) {
-        return { hasAccess: false, reason: "Box not found" };
-    }
-
-    // 1. Check overall box status
-    if (box.status !== 'active') {
-        return { hasAccess: false, reason: `Box status is ${box.status}` };
-    }
-
-    const now = new Date();
-
-    // 2. Check Trial Status
-    if (box.subscriptionStatus === 'trial') {
-        if (box.trialEndsAt && now >= box.trialEndsAt) {
-            // Trial has expired and no paid subscription started
-            if (!box.polarSubscriptionId || box.subscriptionStartsAt === null) {
-                // Update box status to trial_expired if not already handled by webhook
-                // This is a safety net / scheduled check logic
-                await db.update(schema.boxes)
-                    .set({ status: 'trial_expired', updatedAt: new Date() })
-                    .where(eq(schema.boxes.id, boxId));
-                return { hasAccess: false, reason: "Trial expired without subscription" };
-            }
-            // If there is a polarSubscriptionId, access might be granted based on that subscription's status
-            // This case should ideally be handled by subscription webhooks transitioning the box state
-        }
-        // Trial is still active
-        return { hasAccess: true };
-    }
-
-    // 3. Check Paid Subscription Status (if not in trial)
-    if (box.polarSubscriptionId) {
-        const subscription = await db.query.subscriptions.findFirst({
-            where: and(
-                eq(schema.subscriptions.polarSubscriptionId, box.polarSubscriptionId),
-                eq(schema.subscriptions.boxId, boxId)
-            )
-        });
-
-        if (!subscription) {
-            console.warn("Box references Polar subscription ID, but subscription record not found", box.polarSubscriptionId);
-            return { hasAccess: false, reason: "Subscription record mismatch" };
-        }
-
-        // Check subscription status
-        if (['active', 'trialing', 'past_due'].includes(subscription.status)) {
-            // Check if the paid period has ended (relevant for canceled subscriptions)
-            if (subscription.status === 'canceled' || subscription.status === 'past_due') {
-                if (box.subscriptionEndsAt && now >= box.subscriptionEndsAt) {
-                    return { hasAccess: false, reason: "Paid subscription period ended" };
-                }
-            }
-            // Subscription is active or in grace period
-            return { hasAccess: true };
-        } else {
-            // Subscription is in a state that denies access (canceled, unpaid, incomplete, etc.)
-            // Even if subscriptionEndsAt is in the future, if status is 'canceled' and past period end, deny
-            if (box.subscriptionEndsAt && now >= box.subscriptionEndsAt) {
-                return { hasAccess: false, reason: `Subscription status is ${subscription.status} and period ended` };
-            }
-            // If status is 'canceled' but period hasn't ended yet, access might still be granted
-            // This depends on your exact business logic for grace periods
-            // For now, deny if status is explicitly denying (adjust logic if needed)
-            if (['unpaid', 'incomplete', 'incomplete_expired', 'revoked'].includes(subscription.status)) {
-                return { hasAccess: false, reason: `Subscription status is ${subscription.status}` };
-            }
-            // Default deny for other non-active statuses if unsure
-            return { hasAccess: false, reason: `Subscription status is ${subscription.status}` };
-        }
-    } else {
-        // No subscription ID, not in trial -> likely no access
-        return { hasAccess: false, reason: "No active subscription or trial" };
-    }
-
-    // Default deny if logic falls through (shouldn't happen with correct states)
-    return { hasAccess: false, reason: "Access denied by default" };
-}
-
-
-// --- Scheduled Task Placeholder (e.g., using Cloudflare Cron Triggers or a separate worker) ---
-// This function can be run periodically (e.g., daily) to catch edge cases or missed webhooks
-export async function enforceSubscriptionRules() {
-    const now = new Date();
-
-    // 1. Find boxes whose trial has expired without a subscription starting
-    const expiredTrialBoxes = await db.select().from(schema.boxes)
-        .where(and(
-            eq(schema.boxes.subscriptionStatus, 'trial'),
-            lt(schema.boxes.trialEndsAt, now),
-            isNull(schema.boxes.polarSubscriptionId) // No paid subscription linked
-        ));
-
-    for (const box of expiredTrialBoxes) {
-        console.log(`Enforcing trial expiry for box ${box.id}`);
-        await db.update(schema.boxes)
-            .set({
-                status: 'trial_expired',
-                updatedAt: new Date()
-            })
-            .where(eq(schema.boxes.id, box.id));
-    }
-
-    // 2. Find boxes whose paid subscription period has ended (for canceled subscriptions)
-    // This catches cases where the cancellation webhook might have been missed or processed incorrectly
-    const endedSubscriptionBoxes = await db.select({
-        box: schema.boxes,
-        subscription: schema.subscriptions
-    }).from(schema.boxes)
-        .innerJoin(schema.subscriptions, eq(schema.boxes.polarSubscriptionId, schema.subscriptions.polarSubscriptionId))
-        .where(and(
-            eq(schema.boxes.status, 'active'), // Only check active boxes
-            eq(schema.subscriptions.status, 'canceled'), // Subscription is canceled
-            lt(schema.boxes.subscriptionEndsAt, now) // Paid period has ended
-        ));
-
-    for (const { box, subscription } of endedSubscriptionBoxes) {
-        console.log(`Enforcing subscription end for box ${box.id}`);
-        await db.update(schema.boxes)
-            .set({
-                status: 'suspended',
-                updatedAt: new Date()
-            })
-            .where(eq(schema.boxes.id, box.id));
-
-        // Ensure subscription record is also marked correctly if needed
-        await db.update(schema.subscriptions)
-            .set({ lastSyncedAt: new Date(), updatedAt: new Date() }) // Just update sync time, status should be correct
-            .where(eq(schema.subscriptions.id, subscription.id));
-    }
-
-    // 3. Add checks for other scenarios like past_due -> unpaid transitions if needed
-    // ...
-}
-
 
 export const auth = betterAuth(authConfig) as unknown as ReturnType<typeof betterAuth>;
