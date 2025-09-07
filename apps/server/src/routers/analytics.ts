@@ -3,23 +3,22 @@ import { router, protectedProcedure } from "@/lib/trpc";
 import { z } from "zod";
 import { db } from "@/db";
 import {
-    athleteRiskScores,
-    athleteAlerts,
-    athleteInterventions,
-    boxAnalytics,
-    athleteMilestones,
-    athletePrs,
-    athleteWellnessCheckins,
+    subscriptions,
+    subscriptionPlans,
+    gracePeriods,
+    boxes,
     boxMemberships,
-    athleteBenchmarks,
-    wodAttendance,
-    user
+    usageEvents,
+    orders,
+    user, schema
 } from "@/db/schema";
 import {
     requireCoachOrAbove,
     requireBoxOwner
 } from "@/lib/permissions";
-import { eq, desc, and, gte, lte, count, avg, sql } from "drizzle-orm";
+import {eq, desc, and, gte, count, sql, or, SQL, lt} from "drizzle-orm";
+import { AnalyticsService } from "@/lib/services/analytics-service";
+import { BillingService } from "@/lib/services/billing-service";
 
 export const analyticsRouter = router({
     // Get at-risk athletes (coaches and above only)
@@ -32,20 +31,12 @@ export const analyticsRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            const conditions = [eq(athleteRiskScores.boxId, input.boxId)];
-
-            if (input.riskLevel) {
-                conditions.push(eq(athleteRiskScores.riskLevel, input.riskLevel));
-            }
-
-            return db
-                .select()
-                .from(athleteRiskScores)
-                .where(and(...conditions))
-                .orderBy(desc(athleteRiskScores.overallRiskScore))
-                .limit(input.limit);
+            return AnalyticsService.getAtRiskAthletes(
+                input.boxId,
+                input.riskLevel,
+                input.limit
+            );
         }),
-
 
     // Get active alerts
     getActiveAlerts: protectedProcedure
@@ -57,21 +48,11 @@ export const analyticsRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            let whereConditions = and(
-                eq(athleteAlerts.boxId, input.boxId),
-                eq(athleteAlerts.status, "active")
+            return AnalyticsService.getActiveAlerts(
+                input.boxId,
+                input.severity,
+                input.limit
             );
-
-            if (input.severity) {
-                whereConditions = and(whereConditions, eq(athleteAlerts.severity, input.severity));
-            }
-
-            return db
-                .select()
-                .from(athleteAlerts)
-                .where(whereConditions)
-                .orderBy(desc(athleteAlerts.createdAt))
-                .limit(input.limit);
         }),
 
     // Get athlete risk score history
@@ -84,18 +65,11 @@ export const analyticsRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            const startDate = new Date();
-            startDate.setDate(startDate.getDate() - input.days);
-
-            return db
-                .select()
-                .from(athleteRiskScores)
-                .where(and(
-                    eq(athleteRiskScores.boxId, input.boxId),
-                    eq(athleteRiskScores.membershipId, input.membershipId),
-                    gte(athleteRiskScores.calculatedAt, startDate)
-                ))
-                .orderBy(desc(athleteRiskScores.calculatedAt));
+            return AnalyticsService.getAthleteRiskHistory(
+                input.boxId,
+                input.membershipId,
+                input.days
+            );
         }),
 
     // Get intervention history for an athlete
@@ -108,15 +82,11 @@ export const analyticsRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            return db
-                .select()
-                .from(athleteInterventions)
-                .where(and(
-                    eq(athleteInterventions.boxId, input.boxId),
-                    eq(athleteInterventions.membershipId, input.membershipId)
-                ))
-                .orderBy(desc(athleteInterventions.interventionDate))
-                .limit(input.limit);
+            return AnalyticsService.getAthleteInterventions(
+                input.boxId,
+                input.membershipId,
+                input.limit
+            );
         }),
 
     // Log a coach intervention
@@ -137,39 +107,10 @@ export const analyticsRouter = router({
         .mutation(async ({ ctx, input }) => {
             const membership = await requireCoachOrAbove(ctx, input.boxId);
 
-            const [intervention] = await db
-                .insert(athleteInterventions)
-                .values({
-                    boxId: input.boxId,
-                    membershipId: input.membershipId,
-                    coachId: membership.id,
-                    alertId: input.alertId,
-                    interventionType: input.interventionType,
-                    title: input.title,
-                    description: input.description,
-                    outcome: input.outcome,
-                    athleteResponse: input.athleteResponse,
-                    coachNotes: input.coachNotes,
-                    followUpRequired: input.followUpRequired,
-                    followUpAt: input.followUpAt,
-                    interventionDate: new Date(),
-                })
-                .returning();
-
-            // If there's an associated alert, mark it as resolved
-            if (input.alertId) {
-                await db
-                    .update(athleteAlerts)
-                    .set({
-                        status: "resolved",
-                        resolvedAt: new Date(),
-                        resolvedById: membership.id,
-                        resolutionNotes: `Resolved via intervention: ${input.interventionType}`,
-                    })
-                    .where(eq(athleteAlerts.id, input.alertId));
-            }
-
-            return intervention;
+            return AnalyticsService.logIntervention({
+                ...input,
+                coachId: membership.id,
+            });
         }),
 
     // Get box analytics snapshots
@@ -182,15 +123,11 @@ export const analyticsRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            return db
-                .select()
-                .from(boxAnalytics)
-                .where(and(
-                    eq(boxAnalytics.boxId, input.boxId),
-                    eq(boxAnalytics.period, input.period)
-                ))
-                .orderBy(desc(boxAnalytics.periodStart))
-                .limit(input.limit);
+            return AnalyticsService.getBoxAnalytics(
+                input.boxId,
+                input.period,
+                input.limit
+            );
         }),
 
     // Get athlete milestones and celebrations
@@ -204,22 +141,12 @@ export const analyticsRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            const conditions = [eq(athleteMilestones.boxId, input.boxId)];
-
-            if (input.membershipId) {
-                conditions.push(eq(athleteMilestones.membershipId, input.membershipId));
-            }
-
-            if (input.milestoneType) {
-                conditions.push(eq(athleteMilestones.milestoneType, input.milestoneType));
-            }
-
-            return db
-                .select()
-                .from(athleteMilestones)
-                .where(and(...conditions))
-                .orderBy(desc(athleteMilestones.achievedAt))
-                .limit(input.limit);
+            return AnalyticsService.getAthleteMilestones(
+                input.boxId,
+                input.membershipId,
+                input.milestoneType,
+                input.limit
+            );
         }),
 
     // Get comprehensive box health dashboard
@@ -231,109 +158,10 @@ export const analyticsRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            const startDate = new Date();
-            startDate.setDate(startDate.getDate() - input.days);
-
-            // Get various metrics in parallel
-            const [
-                riskDistribution,
-                alertStats,
-                interventionStats,
-                wellnessTrends,
-                attendanceTrends,
-                performanceTrends
-            ] = await Promise.all([
-                // Risk distribution
-                db
-                    .select({
-                        riskLevel: athleteRiskScores.riskLevel,
-                        count: count()
-                    })
-                    .from(athleteRiskScores)
-                    .where(and(
-                        eq(athleteRiskScores.boxId, input.boxId),
-                        gte(athleteRiskScores.calculatedAt, startDate)
-                    ))
-                    .groupBy(athleteRiskScores.riskLevel),
-
-                // Alert statistics
-                db
-                    .select({
-                        alertType: athleteAlerts.alertType,
-                        status: athleteAlerts.status,
-                        count: count()
-                    })
-                    .from(athleteAlerts)
-                    .where(and(
-                        eq(athleteAlerts.boxId, input.boxId),
-                        gte(athleteAlerts.createdAt, startDate)
-                    ))
-                    .groupBy(athleteAlerts.alertType, athleteAlerts.status),
-
-                // Intervention statistics
-                db
-                    .select({
-                        interventionType: athleteInterventions.interventionType,
-                        outcome: athleteInterventions.outcome,
-                        count: count()
-                    })
-                    .from(athleteInterventions)
-                    .where(and(
-                        eq(athleteInterventions.boxId, input.boxId),
-                        gte(athleteInterventions.interventionDate, startDate)
-                    ))
-                    .groupBy(athleteInterventions.interventionType, athleteInterventions.outcome),
-
-                // Wellness trends
-                db
-                    .select({
-                        avgEnergy: avg(athleteWellnessCheckins.energyLevel),
-                        avgSleep: avg(athleteWellnessCheckins.sleepQuality),
-                        avgStress: avg(athleteWellnessCheckins.stressLevel),
-                    })
-                    .from(athleteWellnessCheckins)
-                    .where(and(
-                        eq(athleteWellnessCheckins.boxId, input.boxId),
-                        gte(athleteWellnessCheckins.checkinDate, startDate)
-                    )),
-
-                // Attendance trends - using wodTime instead of attendanceDate
-                db
-                    .select({
-                        totalCheckins: count(),
-                        uniqueAthletes: count(athleteWellnessCheckins.membershipId),
-                    })
-                    .from(athleteWellnessCheckins)
-                    .where(and(
-                        eq(athleteWellnessCheckins.boxId, input.boxId),
-                        gte(athleteWellnessCheckins.checkinDate, startDate)
-                    )),
-
-                // Performance trends
-                db
-                    .select({
-                        totalPrs: count(),
-                        avgImprovement: avg(sql`CAST(${athletePrs.value} AS NUMERIC)`),
-                    })
-                    .from(athletePrs)
-                    .where(and(
-                        eq(athletePrs.boxId, input.boxId),
-                        gte(athletePrs.achievedAt, startDate)
-                    ))
-            ]);
-
-            return {
-                riskDistribution,
-                alertStats,
-                interventionStats,
-                wellnessTrends: wellnessTrends[0],
-                attendanceTrends: attendanceTrends[0],
-                performanceTrends: performanceTrends[0],
-                dateRange: {
-                    start: startDate,
-                    end: new Date(),
-                }
-            };
+            return AnalyticsService.getBoxHealthDashboard(
+                input.boxId,
+                input.days
+            );
         }),
 
     // Get retention analytics
@@ -345,78 +173,10 @@ export const analyticsRouter = router({
         .query(async ({ ctx, input }) => {
             await requireBoxOwner(ctx, input.boxId);
 
-            // Calculate timeframe
-            const endDate = new Date();
-            const startDate = new Date();
-
-            switch (input.timeframe) {
-                case "7d":
-                    startDate.setDate(endDate.getDate() - 7);
-                    break;
-                case "30d":
-                    startDate.setDate(endDate.getDate() - 30);
-                    break;
-                case "90d":
-                    startDate.setDate(endDate.getDate() - 90);
-                    break;
-                case "365d":
-                    startDate.setDate(endDate.getDate() - 365);
-                    break;
-            }
-
-            // Get churn data
-            const churnedAthletes = await db
-                .select({
-                    count: count()
-                })
-                .from(boxMemberships)
-                .where(and(
-                    eq(boxMemberships.boxId, input.boxId),
-                    eq(boxMemberships.isActive, false),
-                    gte(boxMemberships.leftAt, startDate),
-                    lte(boxMemberships.leftAt, endDate)
-                ));
-
-            // Get new athletes
-            const newAthletes = await db
-                .select({
-                    count: count()
-                })
-                .from(boxMemberships)
-                .where(and(
-                    eq(boxMemberships.boxId, input.boxId),
-                    eq(boxMemberships.isActive, true),
-                    gte(boxMemberships.joinedAt, startDate),
-                    lte(boxMemberships.joinedAt, endDate)
-                ));
-
-            // Get total active athletes
-            const activeAthletes = await db
-                .select({
-                    count: count()
-                })
-                .from(boxMemberships)
-                .where(and(
-                    eq(boxMemberships.boxId, input.boxId),
-                    eq(boxMemberships.isActive, true)
-                ));
-
-            // Calculate retention rate
-            const retentionRate = activeAthletes[0].count > 0
-                ? (1 - (churnedAthletes[0].count / activeAthletes[0].count)) * 100
-                : 0;
-
-            return {
-                churned: churnedAthletes[0].count,
-                new: newAthletes[0].count,
-                active: activeAthletes[0].count,
-                retentionRate: Math.round(retentionRate * 100) / 100,
-                timeframe: input.timeframe,
-                period: {
-                    start: startDate,
-                    end: endDate
-                }
-            };
+            return BillingService.getRetentionAnalytics(
+                input.boxId,
+                input.timeframe
+            );
         }),
 
     // Get coach performance metrics
@@ -434,16 +194,16 @@ export const analyticsRouter = router({
             // Get interventions by coach
             const interventionsByCoach = await db
                 .select({
-                    coachId: athleteInterventions.coachId,
+                    coachId: schema.athleteInterventions.coachId,
                     count: count(),
-                    positiveOutcomes: sql<number>`SUM(CASE WHEN ${athleteInterventions.outcome} = 'positive' THEN 1 ELSE 0 END)`,
+                    positiveOutcomes: sql<number>`SUM(CASE WHEN ${schema.athleteInterventions.outcome} = 'positive' THEN 1 ELSE 0 END)`,
                 })
-                .from(athleteInterventions)
+                .from(schema.athleteInterventions)
                 .where(and(
-                    eq(athleteInterventions.boxId, input.boxId),
-                    gte(athleteInterventions.interventionDate, startDate)
+                    eq(schema.athleteInterventions.boxId, input.boxId),
+                    gte(schema.athleteInterventions.interventionDate, startDate)
                 ))
-                .groupBy(athleteInterventions.coachId);
+                .groupBy(schema.athleteInterventions.coachId);
 
             // Get coach details with user information
             const coachDetails = await db
@@ -496,88 +256,11 @@ export const analyticsRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            const startDate = new Date();
-            startDate.setDate(startDate.getDate() - input.days);
-
-            // Get various engagement metrics
-            const [
-                checkinCount,
-                prCount,
-                attendanceCount,
-                benchmarkCount
-            ] = await Promise.all([
-                // Wellness check-ins
-                db
-                    .select({ count: count() })
-                    .from(athleteWellnessCheckins)
-                    .where(and(
-                        eq(athleteWellnessCheckins.boxId, input.boxId),
-                        eq(athleteWellnessCheckins.membershipId, input.membershipId),
-                        gte(athleteWellnessCheckins.checkinDate, startDate)
-                    )),
-
-                // Personal records
-                db
-                    .select({ count: count() })
-                    .from(athletePrs)
-                    .where(and(
-                        eq(athletePrs.boxId, input.boxId),
-                        eq(athletePrs.membershipId, input.membershipId),
-                        gte(athletePrs.achievedAt, startDate)
-                    )),
-
-                // Class attendance - using wodTime instead of attendanceDate
-                db
-                    .select({ count: count() })
-                    .from(wodAttendance)
-                    .where(and(
-                        eq(wodAttendance.boxId, input.boxId),
-                        eq(wodAttendance.membershipId, input.membershipId),
-                        gte(wodAttendance.wodTime, startDate)
-                    )),
-
-                // Benchmark workouts
-                db
-                    .select({ count: count() })
-                    .from(athleteBenchmarks)
-                    .where(and(
-                        eq(athleteBenchmarks.boxId, input.boxId),
-                        eq(athleteBenchmarks.membershipId, input.membershipId),
-                        gte(athleteBenchmarks.completedAt, startDate)
-                    ))
-            ]);
-
-            // Calculate engagement score (weighted average)
-            const maxPossibleDays = input.days;
-            const checkinScore = (checkinCount[0].count / maxPossibleDays) * 30; // 30% weight
-            const prScore = Math.min(prCount[0].count / 5, 1) * 25; // 25% weight (max 5 PRs)
-            const attendanceScore = (attendanceCount[0].count / maxPossibleDays) * 35; // 35% weight
-            const benchmarkScore = Math.min(benchmarkCount[0].count / 3, 1) * 10; // 10% weight (max 3 benchmarks)
-
-            const engagementScore = Math.round(
-                checkinScore + prScore + attendanceScore + benchmarkScore
+            return AnalyticsService.calculateAthleteEngagementScore(
+                input.boxId,
+                input.membershipId,
+                input.days
             );
-
-            return {
-                score: engagementScore,
-                metrics: {
-                    checkins: checkinCount[0].count,
-                    prs: prCount[0].count,
-                    attendance: attendanceCount[0].count,
-                    benchmarks: benchmarkCount[0].count,
-                },
-                breakdown: {
-                    checkinScore: Math.round(checkinScore),
-                    prScore: Math.round(prScore),
-                    attendanceScore: Math.round(attendanceScore),
-                    benchmarkScore: Math.round(benchmarkScore),
-                },
-                period: {
-                    days: input.days,
-                    start: startDate,
-                    end: new Date(),
-                }
-            };
         }),
 
     // Get correlation between wellness and performance
@@ -589,68 +272,151 @@ export const analyticsRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            const startDate = new Date();
-            startDate.setDate(startDate.getDate() - input.days);
+            return AnalyticsService.getWellnessPerformanceCorrelation(
+                input.boxId,
+                input.days
+            );
+        }),
 
-            // Get wellness and performance data
-            const correlationData = await db
-                .select({
-                    energyLevel: athleteWellnessCheckins.energyLevel,
-                    sleepQuality: athleteWellnessCheckins.sleepQuality,
-                    stressLevel: athleteWellnessCheckins.stressLevel,
-                    prValue: sql<number>`CAST(${athletePrs.value} AS NUMERIC)`,
-                })
-                .from(athleteWellnessCheckins)
-                .innerJoin(
-                    athletePrs,
-                    and(
-                        eq(athleteWellnessCheckins.membershipId, athletePrs.membershipId),
-                        eq(athleteWellnessCheckins.boxId, athletePrs.boxId),
-                        sql`DATE(${athleteWellnessCheckins.checkinDate}) = DATE(${athletePrs.achievedAt})`
-                    )
-                )
-                .where(and(
-                    eq(athleteWellnessCheckins.boxId, input.boxId),
-                    gte(athleteWellnessCheckins.checkinDate, startDate)
-                ))
-                .limit(1000); // Limit to prevent excessive data
+    // Enhanced usage analytics with trend analysis
+    getUsageAnalytics: protectedProcedure
+        .input(z.object({
+            boxId: z.string(),
+            startDate: z.date().optional(),
+            endDate: z.date().optional(),
+            eventTypes: z.array(z.string()).optional(),
+            groupBy: z.enum(["day", "week", "month"]).default("day"),
+        }))
+        .query(async ({ ctx, input }) => {
+            await requireBoxOwner(ctx, input.boxId);
 
-            // Calculate simple correlations (this would be enhanced with proper statistical analysis)
-            const energyValues = correlationData.map(d => d.energyLevel);
-            const sleepValues = correlationData.map(d => d.sleepQuality);
-            const stressValues = correlationData.map(d => d.stressLevel);
-            const prValues = correlationData.map(d => d.prValue);
+            const startDate =
+                input.startDate || new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // last 30 days
+            const endDate = input.endDate || new Date();
 
-            // Simple correlation calculation (Pearson would be better but this is simplified)
-            const calculateSimpleCorrelation = (x: number[], y: number[]) => {
-                if (x.length !== y.length || x.length === 0) return 0;
+            // Build where conditions
+            const whereConditions: SQL<unknown>[] = [
+                eq(usageEvents.boxId, input.boxId),
+                gte(usageEvents.createdAt, startDate),
+                lt(usageEvents.createdAt, endDate),
+            ];
 
-                const xMean = x.reduce((a, b) => a + b, 0) / x.length;
-                const yMean = y.reduce((a, b) => a + b, 0) / y.length;
+            if (input.eventTypes && input.eventTypes.length > 0) {
+                const eventTypeConditions = input.eventTypes.map((et) =>
+                    eq(usageEvents.eventType, et)
+                );
 
-                let numerator = 0;
-                let denominatorX = 0;
-                let denominatorY = 0;
+                const eventTypeFilter =
+                    eventTypeConditions.length === 1
+                        ? eventTypeConditions[0]
+                        : or(...eventTypeConditions);
 
-                for (let i = 0; i < x.length; i++) {
-                    numerator += (x[i] - xMean) * (y[i] - yMean);
-                    denominatorX += Math.pow(x[i] - xMean, 2);
-                    denominatorY += Math.pow(y[i] - yMean, 2);
+                whereConditions.push(eventTypeFilter as SQL<unknown>);
+            }
+
+            const usageData = await db.query.usageEvents.findMany({
+                where: and(...whereConditions),
+                orderBy: desc(usageEvents.createdAt),
+            });
+
+            // Aggregate by event type
+            const aggregated: Record<string, number> = usageData.reduce(
+                (acc, event) => {
+                    acc[event.eventType] = (acc[event.eventType] || 0) + event.quantity;
+                    return acc;
+                },
+                {} as Record<string, number>
+            );
+
+            // Group by time period for trend analysis
+            const timeGrouped: Record<string, Record<string, number>> = usageData.reduce(
+                (acc, event) => {
+                    let key: string;
+                    const date = new Date(event.createdAt);
+
+                    switch (input.groupBy) {
+                        case "week": {
+                            const weekStart = new Date(date);
+                            weekStart.setDate(date.getDate() - date.getDay()); // Sunday start
+                            key = weekStart.toISOString().split("T")[0];
+                            break;
+                        }
+                        case "month":
+                            key = `${date.getFullYear()}-${String(
+                                date.getMonth() + 1
+                            ).padStart(2, "0")}`;
+                            break;
+                        default:
+                            key = date.toISOString().split("T")[0];
+                    }
+
+                    if (!acc[key]) acc[key] = {};
+                    acc[key][event.eventType] =
+                        (acc[key][event.eventType] || 0) + event.quantity;
+
+                    return acc;
+                },
+                {} as Record<string, Record<string, number>>
+            );
+
+            // Calculate trends and growth rates
+            const eventTypes = Object.keys(aggregated);
+            const trends = eventTypes.map((eventType) => {
+                const eventData = usageData.filter((e) => e.eventType === eventType);
+                if (eventData.length === 0) {
+                    return { eventType, total: 0, growthRate: 0, trend: "stable" };
                 }
 
-                return numerator / Math.sqrt(denominatorX * denominatorY);
-            };
+                const midPoint = Math.floor(eventData.length / 2);
+                const firstHalf = eventData.slice(0, midPoint);
+                const secondHalf = eventData.slice(midPoint);
+
+                const firstHalfSum = firstHalf.reduce((sum, e) => sum + e.quantity, 0);
+                const secondHalfSum = secondHalf.reduce((sum, e) => sum + e.quantity, 0);
+
+                const growthRate =
+                    firstHalfSum > 0
+                        ? ((secondHalfSum - firstHalfSum) / firstHalfSum) * 100
+                        : 0;
+
+                return {
+                    eventType,
+                    total: aggregated[eventType],
+                    growthRate: Math.round(growthRate * 100) / 100,
+                    trend:
+                        growthRate > 0
+                            ? "increasing"
+                            : growthRate < 0
+                                ? "decreasing"
+                                : "stable",
+                };
+            });
 
             return {
-                energyCorrelation: calculateSimpleCorrelation(energyValues, prValues),
-                sleepCorrelation: calculateSimpleCorrelation(sleepValues, prValues),
-                stressCorrelation: calculateSimpleCorrelation(stressValues, prValues),
-                sampleSize: correlationData.length,
-                period: {
-                    days: input.days,
-                    start: startDate,
-                    end: new Date(),
-                }
+                events: usageData,
+                aggregated,
+                timeGrouped,
+                trends,
+                totalEvents: usageData.length,
+                dateRange: { startDate, endDate },
+                summary: {
+                    mostActiveEventType:
+                        eventTypes.length > 0
+                            ? eventTypes.reduce((a, b) =>
+                                aggregated[a] > aggregated[b] ? a : b
+                            )
+                            : "",
+                    averageEventsPerDay:
+                        usageData.length > 0
+                            ? Math.round(
+                                usageData.length /
+                                Math.ceil(
+                                    (endDate.getTime() - startDate.getTime()) /
+                                    (1000 * 60 * 60 * 24)
+                                )
+                            )
+                            : 0,
+                },
             };
         }),
 });
