@@ -12,7 +12,7 @@ import {
 } from "@/db/schema";
 import {eq, and, desc, gte, count, lte} from "drizzle-orm";
 
-export type SubscriptionTier = "starter" | "performance" | "elite";
+export type SubscriptionTier = "seed" | "grow" | "scale";
 export type UsageEventType = "athlete_added" | "athlete_removed" | "checkin_logged" | "pr_logged" | "wod_completed" | "coach_added" | "coach_removed";
 export type GracePeriodReason = "athlete_limit_exceeded" | "coach_limit_exceeded" | "trial_ending" | "payment_failed" | "subscription_canceled";
 

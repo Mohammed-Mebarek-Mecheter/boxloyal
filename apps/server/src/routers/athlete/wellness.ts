@@ -1,17 +1,12 @@
 // routers/athlete/wellness.ts
 import { router, protectedProcedure } from "@/lib/trpc";
 import { z } from "zod";
-import { db } from "@/db";
-import {
-    athleteWellnessCheckins,
-    wodFeedback,
-    boxMemberships
-} from "@/db/schema";
+import { AthleteService } from "@/lib/services/athlete-service";
 import {
     requireBoxMembership,
-    checkSubscriptionLimits
+    checkSubscriptionLimits,
+    canAccessAthleteData
 } from "@/lib/permissions";
-import { eq, and, desc, gte, lte } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 
 export const athleteWellnessRouter = router({
@@ -36,85 +31,23 @@ export const athleteWellnessRouter = router({
             await checkSubscriptionLimits(input.boxId);
             const membership = await requireBoxMembership(ctx, input.boxId);
 
-            // Check if already checked in today
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            const tomorrow = new Date(today);
-            tomorrow.setDate(tomorrow.getDate() + 1);
-
-            const existingCheckin = await db
-                .select()
-                .from(athleteWellnessCheckins)
-                .where(
-                    and(
-                        eq(athleteWellnessCheckins.boxId, input.boxId),
-                        eq(athleteWellnessCheckins.membershipId, membership.id),
-                        gte(athleteWellnessCheckins.checkinDate, today),
-                        lte(athleteWellnessCheckins.checkinDate, tomorrow)
-                    )
-                )
-                .limit(1);
-
-            if (existingCheckin.length > 0) {
-                throw new TRPCError({
-                    code: "CONFLICT",
-                    message: "You have already checked in today"
-                });
+            // Use AthleteService to submit wellness checkin
+            try {
+                const checkin = await AthleteService.submitWellnessCheckin(
+                    input.boxId,
+                    membership.id,
+                    input
+                );
+                return checkin;
+            } catch (error) {
+                if (error instanceof Error && error.message === "You have already checked in today") {
+                    throw new TRPCError({
+                        code: "CONFLICT",
+                        message: "You have already checked in today"
+                    });
+                }
+                throw error;
             }
-
-            const [checkin] = await db
-                .insert(athleteWellnessCheckins)
-                .values({
-                    boxId: input.boxId,
-                    membershipId: membership.id,
-                    energyLevel: input.energyLevel,
-                    sleepQuality: input.sleepQuality,
-                    stressLevel: input.stressLevel,
-                    motivationLevel: input.motivationLevel,
-                    workoutReadiness: input.workoutReadiness,
-                    soreness: input.soreness ? JSON.stringify(input.soreness) : null,
-                    painAreas: input.painAreas ? JSON.stringify(input.painAreas) : null,
-                    hydrationLevel: input.hydrationLevel,
-                    nutritionQuality: input.nutritionQuality,
-                    outsideActivity: input.outsideActivity,
-                    mood: input.mood,
-                    notes: input.notes,
-                    checkinDate: new Date(),
-                })
-                .returning();
-
-            // Calculate and update check-in streak
-            const yesterday = new Date(today);
-            yesterday.setDate(yesterday.getDate() - 1);
-
-            const yesterdayCheckin = await db
-                .select()
-                .from(athleteWellnessCheckins)
-                .where(
-                    and(
-                        eq(athleteWellnessCheckins.boxId, input.boxId),
-                        eq(athleteWellnessCheckins.membershipId, membership.id),
-                        gte(athleteWellnessCheckins.checkinDate, yesterday),
-                        lte(athleteWellnessCheckins.checkinDate, today)
-                    )
-                )
-                .limit(1);
-
-            const newStreak = yesterdayCheckin.length > 0 ? membership.checkinStreak + 1 : 1;
-            const newLongestStreak = Math.max(membership.longestCheckinStreak, newStreak);
-
-            await db
-                .update(boxMemberships)
-                .set({
-                    lastCheckinDate: new Date(),
-                    totalCheckins: membership.totalCheckins + 1,
-                    checkinStreak: newStreak,
-                    longestCheckinStreak: newLongestStreak,
-                    updatedAt: new Date(),
-                })
-                .where(eq(boxMemberships.id, membership.id));
-
-            return checkin;
         }),
 
     // Get wellness check-ins with trend analysis
@@ -131,7 +64,8 @@ export const athleteWellnessRouter = router({
 
             // Permission check
             if (input.athleteId && input.athleteId !== membership.id) {
-                if (!["owner", "head_coach", "coach"].includes(membership.role)) {
+                const canAccess = await canAccessAthleteData(ctx, input.boxId, targetAthleteId);
+                if (!canAccess) {
                     throw new TRPCError({
                         code: "FORBIDDEN",
                         message: "Cannot view other athletes' check-ins"
@@ -139,21 +73,14 @@ export const athleteWellnessRouter = router({
                 }
             }
 
-            const startDate = new Date();
-            startDate.setDate(startDate.getDate() - input.days);
+            // Use AthleteService to get checkins
+            const checkins = await AthleteService.getWellnessCheckins(
+                input.boxId,
+                targetAthleteId,
+                input.days
+            );
 
-            const checkins = await db
-                .select()
-                .from(athleteWellnessCheckins)
-                .where(
-                    and(
-                        eq(athleteWellnessCheckins.boxId, input.boxId),
-                        eq(athleteWellnessCheckins.membershipId, targetAthleteId),
-                        gte(athleteWellnessCheckins.checkinDate, startDate)
-                    )
-                )
-                .orderBy(desc(athleteWellnessCheckins.checkinDate));
-
+            // Include trends if requested
             let trends = undefined;
             if (input.includeTrends && checkins.length > 0) {
                 const avgEnergy = checkins.reduce((sum, c) => sum + c.energyLevel, 0) / checkins.length;
@@ -200,27 +127,12 @@ export const athleteWellnessRouter = router({
             await checkSubscriptionLimits(input.boxId);
             const membership = await requireBoxMembership(ctx, input.boxId);
 
-            const [feedback] = await db
-                .insert(wodFeedback)
-                .values({
-                    boxId: input.boxId,
-                    membershipId: membership.id,
-                    rpe: input.rpe,
-                    difficultyRating: input.difficultyRating,
-                    enjoymentRating: input.enjoymentRating,
-                    painDuringWorkout: input.painDuringWorkout ? JSON.stringify(input.painDuringWorkout) : null,
-                    feltGoodMovements: input.feltGoodMovements,
-                    struggledMovements: input.struggledMovements,
-                    completed: input.completed,
-                    scalingUsed: input.scalingUsed,
-                    scalingDetails: input.scalingDetails,
-                    workoutTime: input.workoutTime,
-                    result: input.result,
-                    notes: input.notes,
-                    wodName: input.wodName,
-                    wodDate: new Date(),
-                })
-                .returning();
+            // Use AthleteService to submit WOD feedback
+            const feedback = await AthleteService.submitWodFeedback(
+                input.boxId,
+                membership.id,
+                input
+            );
 
             return feedback;
         }),

@@ -16,12 +16,12 @@ declare namespace Cloudflare {
         CORS_ORIGIN:"http://localhost:3001",
         BETTER_AUTH_SECRET:"dwupTWYO5pkk4Ym08VFdLbwtqzztR777",
         BETTER_AUTH_URL:"http://localhost:3000",
-        POLAR_STARTER_PRODUCT_ID: string;
-        POLAR_STARTER_ANNUAL_PRODUCT_ID: string;
-        POLAR_PERFORMANCE_PRODUCT_ID: string;
-        POLAR_PERFORMANCE_ANNUAL_PRODUCT_ID: string;
-        POLAR_ELITE_PRODUCT_ID: string;
-        POLAR_ELITE_ANNUAL_PRODUCT_ID: string;
+        POLAR_SEED_PRODUCT_ID: string;
+        POLAR_SEED_ANNUAL_PRODUCT_ID: string;
+        POLAR_GROW_PRODUCT_ID: string;
+        POLAR_GROW_ANNUAL_PRODUCT_ID: string;
+        POLAR_SCALE_PRODUCT_ID: string;
+        POLAR_SCALE_ANNUAL_PRODUCT_ID: string;
         POLAR_WEBHOOK_SECRET: string;
         APP_VERSION: string;
     }

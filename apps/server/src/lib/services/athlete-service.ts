@@ -10,7 +10,7 @@ import {
     benchmarkWods,
     boxMemberships
 } from "@/db/schema";
-import {eq, and, desc, gte, count, lte} from "drizzle-orm";
+import {eq, and, desc, gte, lte, count, avg, sql} from "drizzle-orm";
 
 export interface AthleteProfileData {
     profile: typeof boxMemberships.$inferSelect;
@@ -25,6 +25,21 @@ export interface AthleteProfileData {
         longestStreak: number;
         memberSince: Date;
     };
+}
+
+export interface WellnessCheckinData {
+    energyLevel: number;
+    sleepQuality: number;
+    stressLevel: number;
+    motivationLevel: number;
+    workoutReadiness: number;
+    soreness?: Record<string, number>;
+    painAreas?: Record<string, number>;
+    hydrationLevel?: number;
+    nutritionQuality?: number;
+    outsideActivity?: string;
+    mood?: string;
+    notes?: string;
 }
 
 export class AthleteService {
@@ -60,43 +75,11 @@ export class AthleteService {
         let recentActivity: typeof athleteWellnessCheckins.$inferSelect[] = [];
 
         if (includePrs) {
-            const thirtyDaysAgo = new Date();
-            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-            recentPrs = await db
-                .select({
-                    pr: athletePrs,
-                    movement: movements,
-                })
-                .from(athletePrs)
-                .innerJoin(movements, eq(athletePrs.movementId, movements.id))
-                .where(
-                    and(
-                        eq(athletePrs.boxId, boxId),
-                        eq(athletePrs.membershipId, athleteId),
-                        gte(athletePrs.achievedAt, thirtyDaysAgo)
-                    )
-                )
-                .orderBy(desc(athletePrs.achievedAt))
-                .limit(10);
+            recentPrs = await this.getRecentPRs(boxId, athleteId, 30, 10);
         }
 
         if (includeRecentActivity) {
-            const sevenDaysAgo = new Date();
-            sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-            recentActivity = await db
-                .select()
-                .from(athleteWellnessCheckins)
-                .where(
-                    and(
-                        eq(athleteWellnessCheckins.boxId, boxId),
-                        eq(athleteWellnessCheckins.membershipId, athleteId),
-                        gte(athleteWellnessCheckins.checkinDate, sevenDaysAgo)
-                    )
-                )
-                .orderBy(desc(athleteWellnessCheckins.checkinDate))
-                .limit(7);
+            recentActivity = await this.getWellnessCheckins(boxId, athleteId, 7, 7);
         }
 
         return {
@@ -110,6 +93,120 @@ export class AthleteService {
                 memberSince: profile.joinedAt,
             }
         };
+    }
+
+    /**
+     * Get recent PRs for an athlete
+     */
+    static async getRecentPRs(
+        boxId: string,
+        athleteId: string,
+        days: number = 30,
+        limit: number = 10
+    ) {
+        const dateFrom = new Date();
+        dateFrom.setDate(dateFrom.getDate() - days);
+
+        return db
+            .select({
+                pr: athletePrs,
+                movement: movements,
+            })
+            .from(athletePrs)
+            .innerJoin(movements, eq(athletePrs.movementId, movements.id))
+            .where(
+                and(
+                    eq(athletePrs.boxId, boxId),
+                    eq(athletePrs.membershipId, athleteId),
+                    gte(athletePrs.achievedAt, dateFrom)
+                )
+            )
+            .orderBy(desc(athletePrs.achievedAt))
+            .limit(limit);
+    }
+
+    /**
+     * Get wellness check-ins for an athlete
+     */
+    static async getWellnessCheckins(
+        boxId: string,
+        athleteId: string,
+        days: number = 7,
+        limit: number = 7
+    ) {
+        const dateFrom = new Date();
+        dateFrom.setDate(dateFrom.getDate() - days);
+
+        return db
+            .select()
+            .from(athleteWellnessCheckins)
+            .where(
+                and(
+                    eq(athleteWellnessCheckins.boxId, boxId),
+                    eq(athleteWellnessCheckins.membershipId, athleteId),
+                    gte(athleteWellnessCheckins.checkinDate, dateFrom)
+                )
+            )
+            .orderBy(desc(athleteWellnessCheckins.checkinDate))
+            .limit(limit);
+    }
+
+    /**
+     * Submit a wellness check-in
+     */
+    static async submitWellnessCheckin(
+        boxId: string,
+        athleteId: string,
+        data: WellnessCheckinData
+    ) {
+        // Check if already checked in today
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+
+        const existingCheckin = await db
+            .select()
+            .from(athleteWellnessCheckins)
+            .where(
+                and(
+                    eq(athleteWellnessCheckins.boxId, boxId),
+                    eq(athleteWellnessCheckins.membershipId, athleteId),
+                    gte(athleteWellnessCheckins.checkinDate, today),
+                    lte(athleteWellnessCheckins.checkinDate, tomorrow)
+                )
+            )
+            .limit(1);
+
+        if (existingCheckin.length > 0) {
+            throw new Error("You have already checked in today");
+        }
+
+        const [checkin] = await db
+            .insert(athleteWellnessCheckins)
+            .values({
+                boxId,
+                membershipId: athleteId,
+                energyLevel: data.energyLevel,
+                sleepQuality: data.sleepQuality,
+                stressLevel: data.stressLevel,
+                motivationLevel: data.motivationLevel,
+                workoutReadiness: data.workoutReadiness,
+                soreness: data.soreness ? JSON.stringify(data.soreness) : null,
+                painAreas: data.painAreas ? JSON.stringify(data.painAreas) : null,
+                hydrationLevel: data.hydrationLevel,
+                nutritionQuality: data.nutritionQuality,
+                outsideActivity: data.outsideActivity,
+                mood: data.mood,
+                notes: data.notes,
+                checkinDate: new Date(),
+            })
+            .returning();
+
+        // Update streak
+        await this.updateCheckinStreak(athleteId);
+
+        return checkin;
     }
 
     /**
@@ -192,7 +289,7 @@ export class AthleteService {
                 .where(and(
                     eq(athleteBenchmarks.boxId, boxId),
                     eq(athleteBenchmarks.membershipId, athleteId),
-                    gte(athleteBenchmarks.completedAt, startDate)
+                    gte(athleteBenchmarks.updatedAt, startDate)
                 )),
 
             db.select({ count: count() })
@@ -240,5 +337,134 @@ export class AthleteService {
                 )
             )
             .orderBy(desc(athleteBadges.awardedAt));
+    }
+
+    /**
+     * Log a PR for an athlete
+     */
+    static async logPr(
+        boxId: string,
+        athleteId: string,
+        movementId: string,
+        value: number,
+        unit: string,
+        options: {
+            reps?: number;
+            notes?: string;
+            coachNotes?: string;
+            videoUrl?: string;
+            videoVisibility?: "private" | "box" | "public";
+            achievedAt?: Date;
+            verifiedByCoach?: boolean;
+        } = {}
+    ) {
+        const publicId = crypto.randomUUID();
+
+        const [pr] = await db
+            .insert(athletePrs)
+            .values({
+                boxId,
+                membershipId: athleteId,
+                movementId,
+                value: value.toString(),
+                unit,
+                reps: options.reps,
+                notes: options.notes,
+                coachNotes: options.coachNotes,
+                videoUrl: options.videoUrl,
+                videoVisibility: options.videoVisibility || "private",
+                achievedAt: options.achievedAt || new Date(),
+                publicId,
+                verifiedByCoach: options.verifiedByCoach || false,
+            })
+            .returning();
+
+        return pr;
+    }
+
+    /**
+     * Log benchmark result for an athlete
+     */
+    static async logBenchmarkResult(
+        boxId: string,
+        athleteId: string,
+        benchmarkId: string,
+        result: number,
+        resultType: "time" | "rounds_reps" | "weight",
+        options: {
+            scaled?: boolean;
+            scalingNotes?: string;
+            notes?: string;
+            coachNotes?: string;
+            completedAt?: Date;
+        } = {}
+    ) {
+        const publicId = crypto.randomUUID();
+
+        const [benchmarkResult] = await db
+            .insert(athleteBenchmarks)
+            .values({
+                boxId,
+                membershipId: athleteId,
+                benchmarkId,
+                result: result.toString(),
+                resultType,
+                scaled: options.scaled || false,
+                scalingNotes: options.scalingNotes,
+                notes: options.notes,
+                coachNotes: options.coachNotes,
+                completedAt: options.completedAt || new Date(),
+                publicId,
+            })
+            .returning();
+
+        return benchmarkResult;
+    }
+
+    /**
+     * Submit WOD feedback
+     */
+    static async submitWodFeedback(
+        boxId: string,
+        athleteId: string,
+        data: {
+            rpe: number;
+            difficultyRating: number;
+            enjoymentRating?: number;
+            painDuringWorkout?: Record<string, number>;
+            feltGoodMovements?: string;
+            struggledMovements?: string;
+            completed?: boolean;
+            scalingUsed?: boolean;
+            scalingDetails?: string;
+            workoutTime?: number;
+            result?: string;
+            notes?: string;
+            wodName?: string;
+        }
+    ) {
+        const [feedback] = await db
+            .insert(wodFeedback)
+            .values({
+                boxId,
+                membershipId: athleteId,
+                rpe: data.rpe,
+                difficultyRating: data.difficultyRating,
+                enjoymentRating: data.enjoymentRating,
+                painDuringWorkout: data.painDuringWorkout ? JSON.stringify(data.painDuringWorkout) : null,
+                feltGoodMovements: data.feltGoodMovements,
+                struggledMovements: data.struggledMovements,
+                completed: data.completed !== undefined ? data.completed : true,
+                scalingUsed: data.scalingUsed !== undefined ? data.scalingUsed : false,
+                scalingDetails: data.scalingDetails,
+                workoutTime: data.workoutTime,
+                result: data.result,
+                notes: data.notes,
+                wodName: data.wodName,
+                wodDate: new Date(),
+            })
+            .returning();
+
+        return feedback;
     }
 }

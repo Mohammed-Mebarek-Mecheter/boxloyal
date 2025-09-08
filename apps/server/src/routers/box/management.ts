@@ -29,7 +29,7 @@ export const boxManagementRouter = router({
             description: z.string().max(500).optional(),
         }))
         .mutation(async ({ ctx, input }) => {
-            // Check if user already owns a box (limit for starter tier)
+            // Check if user already owns a box (limit for seed tier)
             const existingMemberships = await getUserBoxMemberships(ctx);
             const ownerMemberships = existingMemberships.filter(m => m.membership.role === "owner");
 
@@ -65,7 +65,7 @@ export const boxManagementRouter = router({
                     ...input,
                     publicId,
                     subscriptionStatus: "trial",
-                    subscriptionTier: "starter",
+                    subscriptionTier: "seed",
                     trialStartsAt: new Date(),
                     trialEndsAt: trialEndDate,
                     status: "active",

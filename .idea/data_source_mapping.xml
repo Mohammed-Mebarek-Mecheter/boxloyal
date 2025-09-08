@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="DataSourcePerFileMappings">
+    <file url="file://$APPLICATION_CONFIG_DIR$/consoles/db/31ebc415-18e5-4aba-8e33-b500f031c902/console.sql" value="31ebc415-18e5-4aba-8e33-b500f031c902" />
     <file url="file://$PROJECT_DIR$/apps/server/src/routers/analytics.ts" value="31ebc415-18e5-4aba-8e33-b500f031c902" />
   </component>
 </project>

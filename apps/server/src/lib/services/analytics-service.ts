@@ -707,14 +707,14 @@ export class AnalyticsService {
         const benchmarks = await db
             .select({
                 type: sql`'benchmark'`.as('type'),
-                date: athleteBenchmarks.completedAt,
+                date: athleteBenchmarks.updatedAt,
                 membershipId: athleteBenchmarks.membershipId,
                 boxId: athleteBenchmarks.boxId,
                 description: sql`'Benchmark Completed'`.as('description')
             })
             .from(athleteBenchmarks)
             .where(eq(athleteBenchmarks.boxId, boxId))
-            .orderBy(desc(athleteBenchmarks.completedAt))
+            .orderBy(desc(athleteBenchmarks.updatedAt))
             .limit(limit);
 
         const checkins = await db

@@ -1,20 +1,13 @@
 // routers/athlete/performance.ts
 import { router, protectedProcedure } from "@/lib/trpc";
 import { z } from "zod";
-import { db } from "@/db";
-import {
-    athletePrs,
-    athleteBenchmarks,
-    movements,
-    benchmarkWods,
-    boxMemberships
-} from "@/db/schema";
+import { AthleteService } from "@/lib/services/athlete-service";
 import {
     requireBoxMembership,
     canManageUser,
-    checkSubscriptionLimits
+    checkSubscriptionLimits,
+    canAccessAthleteData
 } from "@/lib/permissions";
-import { eq, and, desc, gte, lte, sql, count, avg } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 
 export const athletePerformanceRouter = router({
@@ -42,65 +35,29 @@ export const athletePerformanceRouter = router({
 
             // Permission check - can user manage this athlete?
             if (input.athleteId && input.athleteId !== membership.id) {
-                const targetMembership = await db
-                    .select()
-                    .from(boxMemberships)
-                    .where(eq(boxMemberships.id, input.athleteId))
-                    .limit(1);
-
-                if (!targetMembership.length) {
-                    throw new TRPCError({ code: "NOT_FOUND", message: "Athlete not found" });
-                }
-
-                const canManage = await canManageUser(ctx, input.boxId, targetMembership[0].userId);
+                const canManage = await canManageUser(ctx, input.boxId, targetAthleteId);
                 if (!canManage) {
                     throw new TRPCError({ code: "FORBIDDEN", message: "Cannot log PR for this athlete" });
                 }
             }
 
-            // Validate movement exists
-            const movement = await db
-                .select()
-                .from(movements)
-                .where(eq(movements.id, input.movementId))
-                .limit(1);
-
-            if (!movement.length) {
-                throw new TRPCError({ code: "NOT_FOUND", message: "Movement not found" });
-            }
-
-            // Generate public ID for shareable PRs
-            const publicId = crypto.randomUUID();
-
-            const [pr] = await db
-                .insert(athletePrs)
-                .values({
-                    boxId: input.boxId,
-                    membershipId: targetAthleteId,
-                    movementId: input.movementId,
-                    value: input.value.toString(),
-                    unit: input.unit,
+            // Use AthleteService to log the PR
+            const pr = await AthleteService.logPr(
+                input.boxId,
+                targetAthleteId,
+                input.movementId,
+                input.value,
+                input.unit,
+                {
                     reps: input.reps,
                     notes: input.notes,
                     coachNotes: input.coachNotes,
                     videoUrl: input.videoUrl,
                     videoVisibility: input.videoVisibility,
-                    achievedAt: input.achievedAt || new Date(),
-                    publicId,
+                    achievedAt: input.achievedAt,
                     verifiedByCoach: ["owner", "head_coach", "coach"].includes(membership.role),
-                })
-                .returning();
-
-            // Update athlete's streak and total check-ins if this is a self-log
-            if (!input.athleteId || input.athleteId === membership.id) {
-                await db
-                    .update(boxMemberships)
-                    .set({
-                        totalCheckins: sql`${boxMemberships.totalCheckins} + 1`,
-                        updatedAt: new Date()
-                    })
-                    .where(eq(boxMemberships.id, membership.id));
-            }
+                }
+            );
 
             return pr;
         }),
@@ -123,69 +80,31 @@ export const athletePerformanceRouter = router({
 
             // Permission check for viewing other athletes' PRs
             if (input.athleteId && input.athleteId !== membership.id) {
-                const targetMembership = await db
-                    .select()
-                    .from(boxMemberships)
-                    .where(eq(boxMemberships.id, input.athleteId))
-                    .limit(1);
-
-                if (!targetMembership.length) {
-                    throw new TRPCError({ code: "NOT_FOUND", message: "Athlete not found" });
-                }
-
-                // Coaches can view any athlete's PRs, athletes can only view their own
-                if (!["owner", "head_coach", "coach"].includes(membership.role)) {
+                const canAccess = await canAccessAthleteData(ctx, input.boxId, targetAthleteId);
+                if (!canAccess) {
                     throw new TRPCError({ code: "FORBIDDEN", message: "Cannot view other athletes' PRs" });
                 }
             }
 
-            // Build conditions
-            const conditions = [
-                eq(athletePrs.boxId, input.boxId),
-                eq(athletePrs.membershipId, targetAthleteId),
-            ];
-
-            if (input.movementId) {
-                conditions.push(eq(athletePrs.movementId, input.movementId));
-            }
-            if (input.dateFrom) {
-                conditions.push(gte(athletePrs.achievedAt, input.dateFrom));
-            }
-            if (input.dateTo) {
-                conditions.push(lte(athletePrs.achievedAt, input.dateTo));
-            }
-            if (input.movementCategory) {
-                conditions.push(eq(movements.category, input.movementCategory));
-            }
-
-            // Query PRs with movement info
-            const prs = await db
-                .select({
-                    pr: athletePrs,
-                    movement: movements,
-                })
-                .from(athletePrs)
-                .innerJoin(movements, eq(athletePrs.movementId, movements.id))
-                .where(and(...conditions))
-                .orderBy(desc(athletePrs.achievedAt))
-                .limit(input.limit);
+            // Use AthleteService to get PRs
+            const prs = await AthleteService.getRecentPRs(
+                input.boxId,
+                targetAthleteId,
+                input.dateFrom ? Math.ceil((new Date().getTime() - input.dateFrom.getTime()) / (1000 * 60 * 60 * 24)) : 365,
+                input.limit
+            );
 
             // Include analytics if requested
             let analytics = undefined;
             if (input.includeAnalytics && prs.length > 0) {
-                const totalPrs = await db
-                    .select({ count: count() })
-                    .from(athletePrs)
-                    .where(and(...conditions));
-
-                const avgValue = await db
-                    .select({ avg: avg(sql`CAST(${athletePrs.value} AS DECIMAL)`) })
-                    .from(athletePrs)
-                    .where(and(...conditions));
+                const performanceSummary = await AthleteService.getPerformanceSummary(
+                    input.boxId,
+                    targetAthleteId,
+                    input.dateFrom ? Math.ceil((new Date().getTime() - input.dateFrom.getTime()) / (1000 * 60 * 60 * 24)) : 30
+                );
 
                 analytics = {
-                    totalPrs: totalPrs[0].count,
-                    averageValue: avgValue[0].avg,
+                    totalPrs: performanceSummary.personalRecords,
                 };
             }
 
@@ -213,7 +132,7 @@ export const athletePerformanceRouter = router({
 
             // Permission check for logging for others
             if (input.athleteId && input.athleteId !== membership.id) {
-                const canManage = await canManageUser(ctx, input.boxId, input.athleteId);
+                const canManage = await canManageUser(ctx, input.boxId, targetAthleteId);
                 if (!canManage) {
                     throw new TRPCError({
                         code: "FORBIDDEN",
@@ -222,35 +141,21 @@ export const athletePerformanceRouter = router({
                 }
             }
 
-            // Validate benchmark exists
-            const benchmark = await db
-                .select()
-                .from(benchmarkWods)
-                .where(eq(benchmarkWods.id, input.benchmarkId))
-                .limit(1);
-
-            if (!benchmark.length) {
-                throw new TRPCError({ code: "NOT_FOUND", message: "Benchmark WOD not found" });
-            }
-
-            const publicId = crypto.randomUUID();
-
-            const [result] = await db
-                .insert(athleteBenchmarks)
-                .values({
-                    boxId: input.boxId,
-                    membershipId: targetAthleteId,
-                    benchmarkId: input.benchmarkId,
-                    result: input.result.toString(),
-                    resultType: input.resultType,
+            // Use AthleteService to log benchmark result
+            const result = await AthleteService.logBenchmarkResult(
+                input.boxId,
+                targetAthleteId,
+                input.benchmarkId,
+                input.result,
+                input.resultType,
+                {
                     scaled: input.scaled,
                     scalingNotes: input.scalingNotes,
                     notes: input.notes,
                     coachNotes: input.coachNotes,
-                    completedAt: input.completedAt || new Date(),
-                    publicId,
-                })
-                .returning();
+                    completedAt: input.completedAt,
+                }
+            );
 
             return result;
         }),

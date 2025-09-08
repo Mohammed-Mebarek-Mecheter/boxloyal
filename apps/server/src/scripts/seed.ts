@@ -14,8 +14,8 @@ async function seedDatabase() {
         // Seed subscription plans
         const plans = [
             {
-                name: "Starter",
-                tier: "starter" as const,
+                name: "Seed",
+                tier: "seed" as const,
                 athleteLimit: 200,
                 coachLimit: 5,
                 monthlyPrice: 15000, // $150 in cents
@@ -29,14 +29,14 @@ async function seedDatabase() {
                 isDefault: true,
             },
             {
-                name: "Performance",
-                tier: "performance" as const,
+                name: "Grow",
+                tier: "grow" as const,
                 athleteLimit: 500,
                 coachLimit: 15,
                 monthlyPrice: 25000,
                 annualPrice: 240000,
                 features: JSON.stringify([
-                    "All Starter features",
+                    "All Seed features",
                     "Advanced analytics",
                     "Communication tools",
                     "Priority support",
@@ -44,14 +44,14 @@ async function seedDatabase() {
                 ]),
             },
             {
-                name: "Elite",
-                tier: "elite" as const,
+                name: "Scale",
+                tier: "scale" as const,
                 athleteLimit: 1000,
                 coachLimit: 50,
                 monthlyPrice: 40000,
                 annualPrice: 384000,
                 features: JSON.stringify([
-                    "All Performance features",
+                    "All Grow features",
                     "White-label options",
                     "Custom reporting",
                     "API access",

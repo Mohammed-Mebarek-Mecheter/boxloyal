@@ -11,10 +11,10 @@ import { eq } from "drizzle-orm";
 
 // Helper functions to ensure type safety
 function toSubscriptionTier(tier: string): typeof subscriptionTierEnum.enumValues[number] {
-    if (["starter", "performance", "elite"].includes(tier)) {
+    if (["seed", "grow", "scale"].includes(tier)) {
         return tier as typeof subscriptionTierEnum.enumValues[number];
     }
-    return "starter"; // default fallback
+    return "seed"; // default fallback
 }
 
 function toBoxStatus(status: string): typeof boxStatusEnum.enumValues[number] {
@@ -27,12 +27,12 @@ function toBoxStatus(status: string): typeof boxStatusEnum.enumValues[number] {
 // --- Constants ---
 // Map Polar product IDs to internal tiers (consider making this configurable or derived from DB)
 const PRODUCT_ID_TO_TIER_MAP: Record<string, string> = {
-    [env.POLAR_STARTER_PRODUCT_ID]: "starter",
-    [env.POLAR_STARTER_ANNUAL_PRODUCT_ID]: "starter",
-    [env.POLAR_PERFORMANCE_PRODUCT_ID]: "performance",
-    [env.POLAR_PERFORMANCE_ANNUAL_PRODUCT_ID]: "performance",
-    [env.POLAR_ELITE_PRODUCT_ID]: "elite",
-    [env.POLAR_ELITE_ANNUAL_PRODUCT_ID]: "elite",
+    [env.POLAR_SEED_PRODUCT_ID]: "seed",
+    [env.POLAR_SEED_ANNUAL_PRODUCT_ID]: "seed",
+    [env.POLAR_GROW_PRODUCT_ID]: "grow",
+    [env.POLAR_GROW_ANNUAL_PRODUCT_ID]: "grow",
+    [env.POLAR_SCALE_PRODUCT_ID]: "scale",
+    [env.POLAR_SCALE_ANNUAL_PRODUCT_ID]: "scale",
 };
 // Map Polar subscription status to internal box status (align with your enums)
 const POLAR_STATUS_TO_BOX_STATUS: Record<string, string> = {
@@ -126,12 +126,12 @@ const authConfig: BetterAuthOptions = {
             use: [
                 checkout({
                     products: [
-                        { productId: env.POLAR_STARTER_PRODUCT_ID, slug: "starter" },
-                        { productId: env.POLAR_STARTER_ANNUAL_PRODUCT_ID, slug: "starter-annual" },
-                        { productId: env.POLAR_PERFORMANCE_PRODUCT_ID, slug: "performance" },
-                        { productId: env.POLAR_PERFORMANCE_ANNUAL_PRODUCT_ID, slug: "performance-annual" },
-                        { productId: env.POLAR_ELITE_PRODUCT_ID, slug: "elite" },
-                        { productId: env.POLAR_ELITE_ANNUAL_PRODUCT_ID, slug: "elite-annual" },
+                        { productId: env.POLAR_SEED_PRODUCT_ID, slug: "seed" },
+                        { productId: env.POLAR_SEED_ANNUAL_PRODUCT_ID, slug: "seed-annual" },
+                        { productId: env.POLAR_GROW_PRODUCT_ID, slug: "grow" },
+                        { productId: env.POLAR_GROW_ANNUAL_PRODUCT_ID, slug: "grow-annual" },
+                        { productId: env.POLAR_SCALE_PRODUCT_ID, slug: "scale" },
+                        { productId: env.POLAR_SCALE_ANNUAL_PRODUCT_ID, slug: "scale-annual" },
                     ],
                     successUrl: `${env.BETTER_AUTH_URL}/success?checkout_id={CHECKOUT_ID}`,
                     authenticatedUsersOnly: true
