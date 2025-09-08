@@ -2,7 +2,7 @@
 import { TRPCError } from "@trpc/server";
 import { eq, and } from "drizzle-orm";
 import { db } from "@/db";
-import { boxMemberships, boxes } from "@/db/schema";
+import {boxMemberships, boxes, athleteInterventions, athleteAlerts} from "@/db/schema";
 import type { Context } from "./context";
 
 // Platform-level roles (separate from tenant roles)
@@ -46,6 +46,84 @@ export async function requireBoxMembership(ctx: Context, boxId: string) {
     }
 
     return membership[0];
+}
+
+// For specific athlete access (own data or coached athletes)
+export async function canAccessAthleteData(ctx: Context, boxId: string, athleteMembershipId: string) {
+    const userMembership = await requireBoxMembership(ctx, boxId);
+
+    // Platform admins can access any data
+    try {
+        await requirePlatformAdmin(ctx);
+        return true;
+    } catch {
+        // Not a platform admin, continue with normal checks
+    }
+
+    // Box owners can access any athlete data in their box
+    if (userMembership.role === 'owner') {
+        return true;
+    }
+
+    // Head coaches can access any athlete data in their box
+    if (userMembership.role === 'head_coach') {
+        return true;
+    }
+
+    // Coaches can access athletes they're assigned to or have intervened with
+    if (userMembership.role === 'coach') {
+        // Check if coach is assigned to this athlete through interventions
+        const interventionAssignment = await db
+            .select()
+            .from(athleteInterventions)
+            .where(and(
+                eq(athleteInterventions.boxId, boxId),
+                eq(athleteInterventions.coachId, userMembership.id),
+                eq(athleteInterventions.membershipId, athleteMembershipId)
+            ))
+            .limit(1);
+
+        // Check if coach is assigned to this athlete through alerts
+        const alertAssignment = await db
+            .select()
+            .from(athleteAlerts)
+            .where(and(
+                eq(athleteAlerts.boxId, boxId),
+                eq(athleteAlerts.assignedCoachId, userMembership.id),
+                eq(athleteAlerts.membershipId, athleteMembershipId)
+            ))
+            .limit(1);
+
+        return interventionAssignment.length > 0 || alertAssignment.length > 0;
+    }
+
+    // Athletes can only access their own data
+    return userMembership.id === athleteMembershipId;
+}
+
+// Helper function to check if a coach is assigned to an athlete
+export async function checkCoachAssignment(coachMembershipId: string, athleteMembershipId: string) {
+    // Check interventions
+    const interventionAssignment = await db
+        .select()
+        .from(athleteInterventions)
+        .where(and(
+            eq(athleteInterventions.coachId, coachMembershipId),
+            eq(athleteInterventions.membershipId, athleteMembershipId)
+        ))
+        .limit(1);
+
+    // Check alerts
+    const alertAssignment = await db
+        .select()
+        .from(athleteAlerts)
+        .where(and(
+            eq(athleteAlerts.assignedCoachId, coachMembershipId),
+            eq(athleteAlerts.membershipId, athleteMembershipId)
+        ))
+        .limit(1);
+
+    return interventionAssignment.length > 0 || alertAssignment.length > 0;
 }
 
 export async function requireBoxRole(

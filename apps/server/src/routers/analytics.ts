@@ -8,11 +8,12 @@ import {
 } from "@/db/schema";
 import {
     requireCoachOrAbove,
-    requireBoxOwner
+    requireBoxOwner, canAccessAthleteData
 } from "@/lib/permissions";
 import {eq, and, gte, lt, or, SQL, sql, desc} from "drizzle-orm";
 import { AnalyticsService } from "@/lib/services/analytics-service";
 import { BillingService } from "@/lib/services/billing-service";
+import {TRPCError} from "@trpc/server";
 
 export const analyticsRouter = router({
     // Get at-risk athletes (coaches and above only)
@@ -233,30 +234,6 @@ export const analyticsRouter = router({
             );
         }),
 
-    // Refresh analytics views - New endpoint for admin
-    refreshAnalyticsViews: protectedProcedure
-        .input(z.object({
-            boxId: z.string(),
-        }))
-        .mutation(async ({ ctx, input }) => {
-            await requireBoxOwner(ctx, input.boxId);
-
-            try {
-                // Refresh each materialized view individually
-                await db.execute(sql`REFRESH MATERIALIZED VIEW mv_box_health_dashboard`);
-                await db.execute(sql`REFRESH MATERIALIZED VIEW mv_athlete_engagement_scores`);
-                await db.execute(sql`REFRESH MATERIALIZED VIEW mv_coach_performance`);
-
-                return {
-                    success: true,
-                    message: "Analytics views refreshed successfully"
-                };
-            } catch (error) {
-                console.error("Failed to refresh materialized views", error);
-                throw new Error("Failed to refresh analytics views");
-            }
-        }),
-
     // Enhanced usage analytics with trend analysis
     getUsageAnalytics: protectedProcedure
         .input(z.object({
@@ -398,5 +375,144 @@ export const analyticsRouter = router({
                             : 0,
                 },
             };
+        }),
+
+    // Get monthly retention cohort analysis
+    getMonthlyRetention: protectedProcedure
+        .input(z.object({
+            boxId: z.string(),
+            months: z.number().min(1).max(24).default(12),
+        }))
+        .query(async ({ ctx, input }) => {
+            await requireBoxOwner(ctx, input.boxId);
+
+            return AnalyticsService.getMonthlyRetention(
+                input.boxId,
+                input.months
+            );
+        }),
+
+    getAthleteProgressTimeline: protectedProcedure
+        .input(z.object({
+            boxId: z.string(),
+            athleteMembershipId: z.string(),
+            limit: z.number().min(1).max(100).default(50),
+        }))
+        .query(async ({ ctx, input }) => {
+            // Check if the user can access this athlete's data
+            const canAccess = await canAccessAthleteData(
+                ctx,
+                input.boxId,
+                input.athleteMembershipId
+            );
+
+            if (!canAccess) {
+                throw new TRPCError({
+                    code: "FORBIDDEN",
+                    message: "You don't have permission to access this athlete's data",
+                });
+            }
+
+            return AnalyticsService.getAthleteProgressTimeline(
+                input.boxId,
+                input.athleteMembershipId,
+                input.limit
+            );
+        }),
+
+    // Get box subscription health
+    getBoxSubscriptionHealth: protectedProcedure
+        .input(z.object({
+            boxId: z.string(),
+        }))
+        .query(async ({ ctx, input }) => {
+            await requireBoxOwner(ctx, input.boxId);
+
+            return AnalyticsService.getBoxSubscriptionHealth(input.boxId);
+        }),
+
+    // Get wellness trends over time
+    getWellnessTrends: protectedProcedure
+        .input(z.object({
+            boxId: z.string(),
+            membershipId: z.string(),
+            weeks: z.number().min(1).max(52).default(12),
+        }))
+        .query(async ({ ctx, input }) => {
+            await requireCoachOrAbove(ctx, input.boxId);
+
+            return AnalyticsService.getWellnessTrends(
+                input.boxId,
+                input.membershipId,
+                input.weeks
+            );
+        }),
+
+    // Get recent activity feed
+    getRecentActivityFeed: protectedProcedure
+        .input(z.object({
+            boxId: z.string(),
+            limit: z.number().min(1).max(100).default(50),
+        }))
+        .query(async ({ ctx, input }) => {
+            await requireCoachOrAbove(ctx, input.boxId);
+
+            return AnalyticsService.getRecentActivityFeed(
+                input.boxId,
+                input.limit
+            );
+        }),
+
+    // Get basic box statistics
+    getBasicBoxStatistics: protectedProcedure
+        .input(z.object({
+            boxId: z.string(),
+        }))
+        .query(async ({ ctx, input }) => {
+            await requireCoachOrAbove(ctx, input.boxId);
+
+            return AnalyticsService.getBasicBoxStatistics(input.boxId);
+        }),
+
+    // Get recent interventions
+    getRecentInterventions: protectedProcedure
+        .input(z.object({
+            boxId: z.string(),
+            limit: z.number().min(1).max(50).default(20),
+        }))
+        .query(async ({ ctx, input }) => {
+            await requireCoachOrAbove(ctx, input.boxId);
+
+            return AnalyticsService.getRecentInterventions(
+                input.boxId,
+                input.limit
+            );
+        }),
+
+    // Refresh analytics views - New endpoint for admin
+    refreshAnalyticsViews: protectedProcedure
+        .input(z.object({
+            boxId: z.string(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+            await requireBoxOwner(ctx, input.boxId);
+
+            try {
+                // Refresh all materialized views
+                await db.execute(sql`REFRESH MATERIALIZED VIEW mv_box_health_dashboard`);
+                await db.execute(sql`REFRESH MATERIALIZED VIEW mv_athlete_engagement_scores`);
+                await db.execute(sql`REFRESH MATERIALIZED VIEW mv_coach_performance`);
+                await db.execute(sql`REFRESH MATERIALIZED VIEW mv_monthly_retention`);
+                await db.execute(sql`REFRESH MATERIALIZED VIEW mv_athlete_progress`);
+                await db.execute(sql`REFRESH MATERIALIZED VIEW mv_wellness_trends`);
+
+                return {
+                    success: true,
+                    message: "All analytics views refreshed successfully"
+                };
+            } catch (error) {
+                console.error("Failed to refresh materialized views", error);
+                throw new Error("Failed to refresh analytics views");
+            }
         }),
 });

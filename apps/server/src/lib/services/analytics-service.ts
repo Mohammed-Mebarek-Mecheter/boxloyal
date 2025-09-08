@@ -10,10 +10,7 @@ import {
     athleteWellnessCheckins,
     boxMemberships,
     athleteBenchmarks,
-    wodAttendance,
-    user, userProfiles,
-    subscriptions,
-    subscriptionPlans
+    user, userProfiles
 } from "@/db/schema";
 import {
     mvBoxHealthDashboard,
@@ -32,20 +29,6 @@ import {eq, desc, and, gte, count, sql, inArray} from "drizzle-orm";
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 export type AlertSeverity = "low" | "medium" | "high" | "critical";
 export type AnalyticsPeriod = "daily" | "weekly" | "monthly";
-
-export interface AthleteEngagementMetrics {
-    checkins: number;
-    prs: number;
-    attendance: number;
-    benchmarks: number;
-}
-
-export interface EngagementBreakdown {
-    checkinScore: number;
-    prScore: number;
-    attendanceScore: number;
-    benchmarkScore: number;
-}
 
 export interface BoxHealthMetrics {
     riskDistribution: Array<{ riskLevel: string; count: number }>;
@@ -97,11 +80,11 @@ export interface WellnessTrend {
     boxId: string;
     membershipId: string;
     weekStart: Date;
-    avgEnergy: number | null;
-    avgSleep: number | null;
-    avgStress: number | null;
-    avgMotivation: number | null;
-    avgReadiness: number | null;
+    avgEnergy: number;
+    avgSleep: number;
+    avgStress: number;
+    avgMotivation: number;
+    avgReadiness: number;
     checkinCount: number;
 }
 
@@ -585,6 +568,9 @@ export class AnalyticsService {
         return numerator / Math.sqrt(denominatorX * denominatorY);
     }
 
+    /**
+     * Get monthly retention cohort analysis - Using mv_monthly_retention
+     */
     static async getMonthlyRetention(
         boxId: string,
         months: number = 12
@@ -592,7 +578,7 @@ export class AnalyticsService {
         const startDate = new Date();
         startDate.setMonth(startDate.getMonth() - months);
 
-        return db
+        const retentionData = await db
             .select()
             .from(mvMonthlyRetention)
             .where(and(
@@ -600,6 +586,17 @@ export class AnalyticsService {
                 gte(mvMonthlyRetention.cohortMonth, startDate)
             ))
             .orderBy(desc(mvMonthlyRetention.cohortMonth), desc(mvMonthlyRetention.activityMonth));
+
+        // Transform the data to ensure no null values
+        return retentionData.map(item => ({
+            boxId: item.boxId || boxId,
+            cohortMonth: item.cohortMonth || new Date(),
+            cohortSize: item.cohortSize || 0,
+            activityMonth: item.activityMonth || new Date(),
+            activeMembers: item.activeMembers || 0,
+            retentionRate: item.retentionRate ? parseFloat(item.retentionRate) : 0,
+            monthsSinceJoin: item.monthsSinceJoin || 0
+        }));
     }
 
     /**
@@ -631,7 +628,25 @@ export class AnalyticsService {
             .where(eq(vwBoxSubscriptionHealth.boxId, boxId))
             .limit(1);
 
-        return result[0] || null;
+        if (!result[0]) return null;
+
+        const item = result[0];
+        return {
+            boxId: item.boxId || boxId,
+            boxName: item.boxName || '',
+            subscriptionStatus: item.subscriptionStatus || 'unknown',
+            subscriptionTier: item.subscriptionTier || 'unknown',
+            trialEndsAt: item.trialEndsAt,
+            subscriptionEndsAt: item.subscriptionEndsAt,
+            polarSubscriptionStatus: item.polarSubscriptionStatus,
+            currentPeriodEnd: item.currentPeriodEnd,
+            cancelAtPeriodEnd: item.cancelAtPeriodEnd,
+            activeAthletes: item.activeAthletes || 0,
+            activeCoaches: item.activeCoaches || 0,
+            athleteLimit: item.athleteLimit,
+            coachLimit: item.coachLimit,
+            healthStatus: item.healthStatus || 'unknown'
+        };
     }
 
     /**
@@ -645,7 +660,7 @@ export class AnalyticsService {
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - (weeks * 7));
 
-        return db
+        const wellnessData = await db
             .select()
             .from(mvWellnessTrends)
             .where(and(
@@ -654,6 +669,19 @@ export class AnalyticsService {
                 gte(mvWellnessTrends.weekStart, startDate)
             ))
             .orderBy(desc(mvWellnessTrends.weekStart));
+
+        // Transform the data to ensure no null values
+        return wellnessData.map(item => ({
+            boxId: item.boxId || boxId,
+            membershipId: item.membershipId || membershipId,
+            weekStart: item.weekStart || new Date(),
+            avgEnergy: item.avgEnergy ? parseFloat(item.avgEnergy) : 0,
+            avgSleep: item.avgSleep ? parseFloat(item.avgSleep) : 0,
+            avgStress: item.avgStress ? parseFloat(item.avgStress) : 0,
+            avgMotivation: item.avgMotivation ? parseFloat(item.avgMotivation) : 0,
+            avgReadiness: item.avgReadiness ? parseFloat(item.avgReadiness) : 0,
+            checkinCount: item.checkinCount || 0
+        }));
     }
 
     /**
@@ -715,36 +743,42 @@ export class AnalyticsService {
     static async getBasicBoxStatistics(boxId: string) {
         const stats = await db
             .select({
-                activeAthletes: count().filterWhere(
-                    and(
-                        eq(boxMemberships.boxId, boxId),
-                        eq(boxMemberships.role, 'athlete'),
-                        eq(boxMemberships.isActive, true)
-                    )
-                ),
-                activeCoaches: count().filterWhere(
-                    and(
-                        eq(boxMemberships.boxId, boxId),
-                        inArray(boxMemberships.role, ['head_coach', 'coach']),
-                        eq(boxMemberships.isActive, true)
-                    )
-                ),
-                newMembers30d: count().filterWhere(
-                    and(
-                        eq(boxMemberships.boxId, boxId),
-                        gte(boxMemberships.joinedAt, new Date(Date.now() - 30 * 24 * 60 * 60 * 1000))
-                    )
-                ),
-                avgCheckinStreak: sql<number>`COALESCE(AVG(${boxMemberships.checkinStreak}) FILTER (WHERE ${boxMemberships.role} = 'athlete'), 0)`
+                activeAthletes: sql<number>`
+                    COUNT(CASE 
+                        WHEN ${boxMemberships.role} = 'athlete' 
+                        AND ${boxMemberships.isActive} = true 
+                        THEN 1 
+                    END)`
+                ,
+                activeCoaches: sql<number>`
+                    COUNT(CASE 
+                        WHEN ${boxMemberships.role} IN ('head_coach', 'coach') 
+                        AND ${boxMemberships.isActive} = true 
+                        THEN 1 
+                    END)`
+                ,
+                newMembers30d: sql<number>`
+                    COUNT(CASE 
+                        WHEN ${boxMemberships.joinedAt} >= NOW() - INTERVAL '30 days' 
+                        THEN 1 
+                    END)`
+                ,
+                avgCheckinStreak: sql<number>`
+                    COALESCE(AVG(
+                        CASE 
+                            WHEN ${boxMemberships.role} = 'athlete'
+                    THEN ${boxMemberships.checkinStreak}
+                    END
+                    ), 0)`
             })
             .from(boxMemberships)
             .where(eq(boxMemberships.boxId, boxId));
 
-        return stats[0] || {
-            activeAthletes: 0,
-            activeCoaches: 0,
-            newMembers30d: 0,
-            avgCheckinStreak: 0
+        return {
+            activeAthletes: stats[0]?.activeAthletes || 0,
+            activeCoaches: stats[0]?.activeCoaches || 0,
+            newMembers30d: stats[0]?.newMembers30d || 0,
+            avgCheckinStreak: stats[0]?.avgCheckinStreak || 0
         };
     }
 
