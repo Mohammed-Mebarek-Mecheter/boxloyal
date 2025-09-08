@@ -48,10 +48,10 @@ export const badgeTypeEnum = pgEnum("badge_type", [
 ]);
 
 // Video visibility with consistent enum usage
-export const videoVisibilityEnum = pgEnum("video_visibility", [
-    "private", // Only the athlete and coaches
-    "box",     // All athletes of the box
-    "public"   // For leaderboards/social sharing (requires coach approval)
+export const consentTypeEnum = pgEnum("consent_type", [
+    "coaching",       // Required for any video usage
+    "box_visibility", // Allows sharing within the box
+    "public"          // Allows public sharing (requires coach approval)
 ]);
 
 // Video processing status enum for consistency

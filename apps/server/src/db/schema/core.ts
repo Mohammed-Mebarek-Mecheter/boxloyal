@@ -1,4 +1,4 @@
-﻿// db/schema/core.ts - Enhanced version with consistency fixes
+﻿// db/schema/core.ts - Enhanced version with payment workflow support
 import {
     pgTable,
     text,
@@ -28,7 +28,9 @@ export const subscriptionStatusEnum = pgEnum("subscription_status", [
     "active",
     "past_due",
     "canceled",
-    "incomplete"
+    "incomplete",
+    "paused", // Added for temporary suspensions
+    "churned"  // Added for definitively lost customers
 ]);
 
 export const subscriptionTierEnum = pgEnum("subscription_tier", [
@@ -40,7 +42,9 @@ export const subscriptionTierEnum = pgEnum("subscription_tier", [
 export const boxStatusEnum = pgEnum("box_status", [
     "active",
     "suspended",
-    "trial_expired"
+    "trial_expired",
+    "over_limit", // Added for soft-block scenarios
+    "payment_failed" // Added for billing issues
 ]);
 
 export const inviteStatusEnum = pgEnum("invite_status", [
@@ -56,7 +60,7 @@ export const approvalStatusEnum = pgEnum("approval_status", [
     "rejected"
 ]);
 
-// Core tenant/organization table - Enhanced with proper constraints
+// Core tenant/organization table - Enhanced with payment workflow support
 export const boxes = pgTable("boxes", {
     id: uuid("id").defaultRandom().primaryKey(),
     publicId: text("public_id").notNull().unique(), // CUID2 for public URLs
@@ -78,37 +82,61 @@ export const boxes = pgTable("boxes", {
     logo: text("logo"),
     description: text("description"),
 
-    // Subscription & Billing - Enhanced with proper constraints
+    // ENHANCED: Subscription & Billing with proper limits tracking
     subscriptionStatus: subscriptionStatusEnum("subscription_status").default("trial").notNull(),
     subscriptionTier: subscriptionTierEnum("subscription_tier").default("seed").notNull(),
 
-    // Trial Handling - Consistent timestamp naming
+    // CRITICAL: Current plan limits (synced from active subscription plan)
+    currentAthleteLimit: integer("current_athlete_limit").default(75).notNull(), // From Seed plan
+    currentCoachLimit: integer("current_coach_limit").default(3).notNull(),
+
+    // ENHANCED: Current usage tracking (calculated fields, updated via triggers/cron)
+    currentAthleteCount: integer("current_athlete_count").default(0).notNull(),
+    currentCoachCount: integer("current_coach_count").default(0).notNull(),
+
+    // ENHANCED: Overage tracking
+    isOverageEnabled: boolean("is_overage_enabled").default(false).notNull(), // User opted into soft-block model
+    currentAthleteOverage: integer("current_athlete_overage").default(0).notNull(), // Athletes over limit
+    currentCoachOverage: integer("current_coach_overage").default(0).notNull(), // Coaches over limit
+
+    // ENHANCED: Trial Handling with better tracking
     trialStartsAt: timestamp("trial_starts_at", { withTimezone: true }),
     trialEndsAt: timestamp("trial_ends_at", { withTimezone: true }),
+    trialDaysRemaining: integer("trial_days_remaining"), // Calculated field for easy querying
+    hasUsedTrial: boolean("has_used_trial").default(false).notNull(), // Prevent multiple trials
 
-    // Subscription Period - Consistent timestamp naming
+    // ENHANCED: Subscription Period tracking
     subscriptionStartsAt: timestamp("subscription_starts_at", { withTimezone: true }),
     subscriptionEndsAt: timestamp("subscription_ends_at", { withTimezone: true }),
+    nextBillingDate: timestamp("next_billing_date", { withTimezone: true }), // For overage calculations
+    billingInterval: text("billing_interval").default("month"), // "month" or "year"
 
-    // Polar Integration
+    // ENHANCED: Polar Integration with better tracking
     polarCustomerId: text("polar_customer_id").unique(),
     polarSubscriptionId: text("polar_subscription_id").unique(),
+    lastPolarSyncAt: timestamp("last_polar_sync_at", { withTimezone: true }), // Track sync status
 
-    // Status & Metadata
+    // ENHANCED: Status & Metadata with payment context
     status: boxStatusEnum("status").default("active").notNull(),
     isDemo: boolean("is_demo").default(false).notNull(),
     demoDataResetAt: timestamp("demo_data_reset_at", { withTimezone: true }),
 
-    // Settings
-    settings: json("settings"),
+    // ENHANCED: Grace period tracking for over-limit scenarios
+    graceEndsAt: timestamp("grace_ends_at", { withTimezone: true }), // When they must upgrade/reduce
+    graceReason: text("grace_reason"), // "athlete_limit_exceeded", "payment_failed", etc.
+    gracePeriodNotifiedAt: timestamp("grace_period_notified_at", { withTimezone: true }),
+
+    // ENHANCED: Settings with payment-related config
+    settings: json("settings"), // Can include notification preferences, etc.
 
     // Onboarding settings
     requireApproval: boolean("require_approval").default(true).notNull(),
     allowPublicSignup: boolean("allow_public_signup").default(true).notNull(),
 
-    // Timestamps - Consistent timezone handling
+    // ENHANCED: Timestamps with better tracking
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }), // For churn analysis
 }, (table) => ({
     // Enhanced indexing for performance
     slugIdx: index("boxes_slug_idx").on(table.slug),
@@ -120,8 +148,46 @@ export const boxes = pgTable("boxes", {
     polarCustomerIdx: index("boxes_polar_customer_idx").on(table.polarCustomerId),
     polarSubscriptionIdx: index("boxes_polar_subscription_idx").on(table.polarSubscriptionId),
     isDemoIdx: index("boxes_is_demo_idx").on(table.isDemo),
+    nextBillingDateIdx: index("boxes_next_billing_date_idx").on(table.nextBillingDate),
+    graceEndsAtIdx: index("boxes_grace_ends_at_idx").on(table.graceEndsAt),
+
+    // NEW: Critical indexes for payment workflows
+    overageEnabledIdx: index("boxes_overage_enabled_idx").on(table.isOverageEnabled),
+    currentUsageIdx: index("boxes_current_usage_idx").on(table.currentAthleteCount, table.currentCoachCount),
+    limitsIdx: index("boxes_limits_idx").on(table.currentAthleteLimit, table.currentCoachLimit),
+    trialStatusIdx: index("boxes_trial_status_idx").on(table.subscriptionStatus, table.trialEndsAt)
+        .where(sql`subscription_status = 'trial'`),
+    overLimitIdx: index("boxes_over_limit_idx").on(table.currentAthleteOverage, table.currentCoachOverage)
+        .where(sql`current_athlete_overage > 0 OR current_coach_overage > 0`),
+
     // Composite indexes for common queries
     statusSubscriptionIdx: index("boxes_status_subscription_idx").on(table.status, table.subscriptionStatus),
+
+    // ENHANCED: Constraints for data integrity
+    athleteCountPositive: check(
+        "boxes_athlete_count_positive",
+        sql`${table.currentAthleteCount} >= 0`
+    ),
+    coachCountPositive: check(
+        "boxes_coach_count_positive",
+        sql`${table.currentCoachCount} >= 0`
+    ),
+    athleteLimitPositive: check(
+        "boxes_athlete_limit_positive",
+        sql`${table.currentAthleteLimit} > 0`
+    ),
+    coachLimitPositive: check(
+        "boxes_coach_limit_positive",
+        sql`${table.currentCoachLimit} > 0`
+    ),
+    overagePositive: check(
+        "boxes_overage_positive",
+        sql`${table.currentAthleteOverage} >= 0 AND ${table.currentCoachOverage} >= 0`
+    ),
+    trialDaysPositive: check(
+        "boxes_trial_days_positive",
+        sql`${table.trialDaysRemaining} >= 0`
+    ),
 }));
 
 // Demo athlete personas for storytelling - Enhanced
@@ -207,15 +273,19 @@ export const boxMemberships = pgTable("box_memberships", {
     boxUserIdx: index("box_memberships_box_user_idx").on(table.boxId, table.userId),
     boxRoleIdx: index("box_memberships_box_role_idx").on(table.boxId, table.role),
     publicIdIdx: index("box_memberships_public_id_idx").on(table.publicId),
-    userIdIdx: index("box_memberships_user_id_idx").on(table.userId), // Added missing index
-    boxIdIdx: index("box_memberships_box_id_idx").on(table.boxId), // Added missing index
+    userIdIdx: index("box_memberships_user_id_idx").on(table.userId),
+    boxIdIdx: index("box_memberships_box_id_idx").on(table.boxId),
     checkinStreakIdx: index("box_memberships_checkin_streak_idx").on(table.checkinStreak),
     activeIdx: index("box_memberships_active_idx").on(table.isActive),
     joinedAtIdx: index("box_memberships_joined_at_idx").on(table.joinedAt),
+    roleActiveIdx: index("box_memberships_role_active_idx").on(table.role, table.isActive), // NEW: For counting by role
+
     // Composite indexes for common queries
     boxActiveRoleIdx: index("box_memberships_box_active_role_idx").on(table.boxId, table.isActive, table.role),
+
     // Unique constraint
     userBoxUnique: unique("box_memberships_user_box_unique").on(table.boxId, table.userId),
+
     // Constraints
     checkinStreakPositive: check(
         "checkin_streak_positive",
