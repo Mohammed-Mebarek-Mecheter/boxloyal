@@ -168,7 +168,7 @@ export const alertFilterSchema = z.object({
         "declining_performance", "poor_attendance", "negative_wellness",
         "no_checkin", "injury_risk", "engagement_drop", "churn_risk"
     ]).optional(),
-    assignedCoachId: z.string().uuid().optional(),
+    assignedCoachId: z.uuid().optional(),
 });
 
 export const wellnessFilterSchema = z.object({

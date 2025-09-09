@@ -1,4 +1,4 @@
-// routers/athlete/performance.ts
+// routers/athlete/performance.ts - Enhanced version aligned with new schema
 import { router, protectedProcedure } from "@/lib/trpc";
 import { z } from "zod";
 import { AthleteService } from "@/lib/services/athlete-service";
@@ -10,39 +10,54 @@ import {
 } from "@/lib/permissions";
 import { TRPCError } from "@trpc/server";
 
+// Enhanced validation schemas
+const videoUploadSchema = z.object({
+    gumletAssetId: z.string(),
+    consentTypes: z.array(z.enum(["coaching", "box_visibility", "public"])),
+    thumbnailUrl: z.string().url().optional(),
+    videoDuration: z.number().positive().optional(),
+    collectionId: z.string().optional(),
+    gumletMetadata: z.any().optional(),
+});
+
+const bodyPartSchema = z.enum([
+    "neck", "shoulders", "chest", "upper_back", "lower_back", "abs",
+    "biceps", "triceps", "forearms", "glutes", "quads", "hamstrings",
+    "calves", "ankles", "knees", "hips", "wrists"
+]);
+
 export const athletePerformanceRouter = router({
-    // Enhanced PR logging with better validation and features
+    // Enhanced PR logging with video support and better validation
     logPr: protectedProcedure
         .input(z.object({
             boxId: z.uuid(),
-            athleteId: z.uuid().optional(), // If not provided, logs for self
+            athleteId: z.uuid().optional(),
             movementId: z.uuid(),
             value: z.number().positive(),
-            unit: z.string(),
+            unit: z.string().min(1).max(20),
             reps: z.number().positive().optional(),
             notes: z.string().max(500).optional(),
             coachNotes: z.string().max(500).optional(),
-            videoUrl: z.url().optional(),
-            videoVisibility: z.enum(["private", "box", "public"]).default("private"),
             achievedAt: z.date().optional(),
+            videoData: videoUploadSchema.optional(),
         }))
         .mutation(async ({ ctx, input }) => {
-            // Check subscription limits
             await checkSubscriptionLimits(input.boxId);
-
             const membership = await requireBoxMembership(ctx, input.boxId);
             const targetAthleteId = input.athleteId || membership.id;
 
-            // Permission check - can user manage this athlete?
+            // Permission check
             if (input.athleteId && input.athleteId !== membership.id) {
-                const canManage = await canManageUser(ctx, input.boxId, targetAthleteId);
+                const canManage = await canManageUser(ctx, input.boxId, input.athleteId);
                 if (!canManage) {
-                    throw new TRPCError({ code: "FORBIDDEN", message: "Cannot log PR for this athlete" });
+                    throw new TRPCError({
+                        code: "FORBIDDEN",
+                        message: "Cannot log PR for this athlete"
+                    });
                 }
             }
 
-            // Use AthleteService to log the PR
-            const pr = await AthleteService.logPr(
+            return AthleteService.logPr(
                 input.boxId,
                 targetAthleteId,
                 input.movementId,
@@ -52,14 +67,11 @@ export const athletePerformanceRouter = router({
                     reps: input.reps,
                     notes: input.notes,
                     coachNotes: input.coachNotes,
-                    videoUrl: input.videoUrl,
-                    videoVisibility: input.videoVisibility,
                     achievedAt: input.achievedAt,
                     verifiedByCoach: ["owner", "head_coach", "coach"].includes(membership.role),
+                    videoData: input.videoData,
                 }
             );
-
-            return pr;
         }),
 
     // Enhanced PR retrieval with filtering and analytics
@@ -68,71 +80,63 @@ export const athletePerformanceRouter = router({
             boxId: z.uuid(),
             athleteId: z.uuid().optional(),
             movementId: z.uuid().optional(),
-            movementCategory: z.enum(["squat", "deadlift", "press", "olympic", "gymnastics", "cardio", "other"]).optional(),
+            movementCategory: z.enum([
+                "squat", "deadlift", "press", "olympic", "gymnastics", "cardio", "other"
+            ]).optional(),
             dateFrom: z.date().optional(),
             dateTo: z.date().optional(),
             limit: z.number().min(1).max(100).default(20),
-            includeAnalytics: z.boolean().default(false),
+            includeVideo: z.boolean().default(false),
         }))
         .query(async ({ ctx, input }) => {
             const membership = await requireBoxMembership(ctx, input.boxId);
             const targetAthleteId = input.athleteId || membership.id;
 
-            // Permission check for viewing other athletes' PRs
+            // Permission check
             if (input.athleteId && input.athleteId !== membership.id) {
-                const canAccess = await canAccessAthleteData(ctx, input.boxId, targetAthleteId);
+                const canAccess = await canAccessAthleteData(ctx, input.boxId, input.athleteId);
                 if (!canAccess) {
-                    throw new TRPCError({ code: "FORBIDDEN", message: "Cannot view other athletes' PRs" });
+                    throw new TRPCError({
+                        code: "FORBIDDEN",
+                        message: "Cannot view other athletes' PRs"
+                    });
                 }
             }
 
-            // Use AthleteService to get PRs
-            const prs = await AthleteService.getRecentPRs(
+            const days = input.dateFrom
+                ? Math.ceil((new Date().getTime() - input.dateFrom.getTime()) / (1000 * 60 * 60 * 24))
+                : 365;
+
+            return AthleteService.getRecentPRs(
                 input.boxId,
                 targetAthleteId,
-                input.dateFrom ? Math.ceil((new Date().getTime() - input.dateFrom.getTime()) / (1000 * 60 * 60 * 24)) : 365,
+                days,
                 input.limit
             );
-
-            // Include analytics if requested
-            let analytics = undefined;
-            if (input.includeAnalytics && prs.length > 0) {
-                const performanceSummary = await AthleteService.getPerformanceSummary(
-                    input.boxId,
-                    targetAthleteId,
-                    input.dateFrom ? Math.ceil((new Date().getTime() - input.dateFrom.getTime()) / (1000 * 60 * 60 * 24)) : 30
-                );
-
-                analytics = {
-                    totalPrs: performanceSummary.personalRecords,
-                };
-            }
-
-            return { prs, analytics };
         }),
 
-    // Log benchmark WOD result
+    // Log benchmark WOD result with enhanced validation
     logBenchmarkResult: protectedProcedure
         .input(z.object({
             boxId: z.uuid(),
             athleteId: z.uuid().optional(),
             benchmarkId: z.uuid(),
-            result: z.number().positive(),
-            resultType: z.enum(["time", "rounds_reps", "weight"]),
+            value: z.number().positive(),
+            valueType: z.enum(["time", "rounds_reps", "weight"]),
             scaled: z.boolean().default(false),
             scalingNotes: z.string().max(500).optional(),
             notes: z.string().max(500).optional(),
             coachNotes: z.string().max(500).optional(),
-            completedAt: z.date().optional(),
+            achievedAt: z.date().optional(),
         }))
         .mutation(async ({ ctx, input }) => {
             await checkSubscriptionLimits(input.boxId);
             const membership = await requireBoxMembership(ctx, input.boxId);
             const targetAthleteId = input.athleteId || membership.id;
 
-            // Permission check for logging for others
+            // Permission check
             if (input.athleteId && input.athleteId !== membership.id) {
-                const canManage = await canManageUser(ctx, input.boxId, targetAthleteId);
+                const canManage = await canManageUser(ctx, input.boxId, input.athleteId);
                 if (!canManage) {
                     throw new TRPCError({
                         code: "FORBIDDEN",
@@ -141,22 +145,143 @@ export const athletePerformanceRouter = router({
                 }
             }
 
-            // Use AthleteService to log benchmark result
-            const result = await AthleteService.logBenchmarkResult(
+            return AthleteService.logBenchmarkResult(
                 input.boxId,
                 targetAthleteId,
                 input.benchmarkId,
-                input.result,
-                input.resultType,
+                input.value,
+                input.valueType,
                 {
                     scaled: input.scaled,
                     scalingNotes: input.scalingNotes,
                     notes: input.notes,
                     coachNotes: input.coachNotes,
-                    completedAt: input.completedAt,
+                    achievedAt: input.achievedAt,
                 }
             );
+        }),
 
-            return result;
+    // Get benchmark results
+    getBenchmarks: protectedProcedure
+        .input(z.object({
+            boxId: z.uuid(),
+            athleteId: z.uuid().optional(),
+            benchmarkId: z.uuid().optional(),
+            category: z.enum(["girls", "hero", "open", "games", "custom"]).optional(),
+            dateFrom: z.date().optional(),
+            dateTo: z.date().optional(),
+            limit: z.number().min(1).max(100).default(20),
+        }))
+        .query(async ({ ctx, input }) => {
+            const membership = await requireBoxMembership(ctx, input.boxId);
+            const targetAthleteId = input.athleteId || membership.id;
+
+            // Permission check
+            if (input.athleteId && input.athleteId !== membership.id) {
+                const canAccess = await canAccessAthleteData(ctx, input.boxId, input.athleteId);
+                if (!canAccess) {
+                    throw new TRPCError({
+                        code: "FORBIDDEN",
+                        message: "Cannot view other athletes' benchmarks"
+                    });
+                }
+            }
+
+            const days = input.dateFrom
+                ? Math.ceil((new Date().getTime() - input.dateFrom.getTime()) / (1000 * 60 * 60 * 24))
+                : 365;
+
+            return AthleteService.getRecentBenchmarks(
+                input.boxId,
+                targetAthleteId,
+                days,
+                input.limit
+            );
+        }),
+
+    // Process video webhook from Gumlet
+    processVideoWebhook: protectedProcedure
+        .input(z.object({
+            asset_id: z.string(),
+            status: z.string(),
+            progress: z.number().min(0).max(100).optional(),
+            webhook_id: z.string().optional(),
+            metadata: z.any().optional(),
+        }))
+        .mutation(async ({ ctx, input }) => {
+            // This endpoint should be called by Gumlet webhooks
+            // You might want to add webhook signature verification here
+
+            return AthleteService.processGumletWebhook(input);
+        }),
+
+    // Award achievement badges
+    awardBadge: protectedProcedure
+        .input(z.object({
+            boxId: z.uuid(),
+            athleteId: z.uuid(),
+            badgeType: z.enum([
+                "checkin_streak", "pr_achievement", "benchmark_completion",
+                "attendance", "consistency", "community"
+            ]),
+            title: z.string().min(1).max(100),
+            description: z.string().max(500).optional(),
+            icon: z.string().max(100).optional(),
+            achievedValue: z.string().max(100).optional(),
+            tier: z.number().min(1).max(10).default(1),
+        }))
+        .mutation(async ({ ctx, input }) => {
+            await checkSubscriptionLimits(input.boxId);
+            const membership = await requireBoxMembership(ctx, input.boxId);
+
+            // Only coaches and above can award badges
+            if (!["owner", "head_coach", "coach"].includes(membership.role)) {
+                throw new TRPCError({
+                    code: "FORBIDDEN",
+                    message: "Insufficient permissions to award badges"
+                });
+            }
+
+            return AthleteService.awardBadge(
+                input.boxId,
+                input.athleteId,
+                {
+                    badgeType: input.badgeType,
+                    title: input.title,
+                    description: input.description,
+                    icon: input.icon,
+                    achievedValue: input.achievedValue,
+                    tier: input.tier,
+                }
+            );
+        }),
+
+    // Get performance statistics
+    getPerformanceStats: protectedProcedure
+        .input(z.object({
+            boxId: z.uuid(),
+            athleteId: z.uuid().optional(),
+            days: z.number().min(1).max(365).default(30),
+        }))
+        .query(async ({ ctx, input }) => {
+            const membership = await requireBoxMembership(ctx, input.boxId);
+            const targetAthleteId = input.athleteId || membership.id;
+
+            // Permission check
+            if (input.athleteId && input.athleteId !== membership.id) {
+                const canAccess = await canAccessAthleteData(ctx, input.boxId, input.athleteId);
+                if (!canAccess) {
+                    throw new TRPCError({
+                        code: "FORBIDDEN",
+                        message: "Cannot view other athletes' stats"
+                    });
+                }
+            }
+
+            return AthleteService.getAthleteStats(
+                input.boxId,
+                targetAthleteId,
+                input.days
+            );
         }),
 });

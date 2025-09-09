@@ -10,7 +10,7 @@ import {
     athleteWellnessCheckins,
     boxMemberships,
     athleteBenchmarks,
-    user, userProfiles
+    user, userProfiles, wodFeedback, wodAttendance, orders
 } from "@/db/schema";
 import {
     mvBoxHealthDashboard,
@@ -23,7 +23,8 @@ import {
     vwBoxSubscriptionHealth,
     mvWellnessTrends
 } from "@/db/schema/views";
-import {eq, desc, and, gte, count, sql, inArray} from "drizzle-orm";
+import {eq, desc, and, gte, count, sql, inArray, avg, sum, lte} from "drizzle-orm";
+import type {RiskIndicators} from "@/lib/services/athlete-service";
 
 // Types for better type safety
 export type RiskLevel = "low" | "medium" | "high" | "critical";
@@ -90,7 +91,303 @@ export interface WellnessTrend {
 
 export class AnalyticsService {
     /**
-     * Get at-risk athletes for a box - Using vw_athlete_risk_overview
+     * Calculate athlete retention risk score (core SaaS value)
+     */
+    static async calculateRetentionRisk(
+        boxId: string,
+        athleteId: string,
+        options: {
+            lookbackDays?: number;
+            includeRecommendations?: boolean;
+        } = {}
+    ): Promise<RiskIndicators> {
+        const { lookbackDays = 30, includeRecommendations = true } = options;
+
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - lookbackDays);
+
+        // Fetch comprehensive athlete data for analysis
+        const [
+            membership,
+            recentCheckins,
+            recentWods,
+            recentAttendance,
+            wellnessAvg,
+            performanceData
+        ] = await Promise.all([
+            db.select()
+                .from(boxMemberships)
+                .where(eq(boxMemberships.id, athleteId))
+                .limit(1),
+
+            db.select({ count: count() })
+                .from(athleteWellnessCheckins)
+                .where(and(
+                    eq(athleteWellnessCheckins.membershipId, athleteId),
+                    gte(athleteWellnessCheckins.checkinDate, startDate)
+                )),
+
+            db.select({
+                count: count(),
+                avgRpe: avg(wodFeedback.rpe),
+                avgDifficulty: avg(wodFeedback.difficultyRating),
+                avgEnjoyment: avg(wodFeedback.enjoymentRating)
+            })
+                .from(wodFeedback)
+                .where(and(
+                    eq(wodFeedback.membershipId, athleteId),
+                    gte(wodFeedback.wodDate, startDate)
+                )),
+
+            db.select({
+                attended: sql<number>`COUNT(*) FILTER (WHERE ${wodAttendance.status} = 'attended')`,
+                total: count()
+            })
+                .from(wodAttendance)
+                .where(and(
+                    eq(wodAttendance.membershipId, athleteId),
+                    gte(wodAttendance.attendanceDate, sql`${startDate}::date`)
+                )),
+
+            db.select({
+                avgEnergy: avg(athleteWellnessCheckins.energyLevel),
+                avgStress: avg(athleteWellnessCheckins.stressLevel),
+                avgReadiness: avg(athleteWellnessCheckins.workoutReadiness)
+            })
+                .from(athleteWellnessCheckins)
+                .where(and(
+                    eq(athleteWellnessCheckins.membershipId, athleteId),
+                    gte(athleteWellnessCheckins.checkinDate, startDate)
+                )),
+
+            db.select({ count: count() })
+                .from(athletePrs)
+                .where(and(
+                    eq(athletePrs.membershipId, athleteId),
+                    gte(athletePrs.achievedAt, startDate)
+                ))
+        ]);
+
+        if (!membership.length) {
+            throw new Error("Athlete membership not found");
+        }
+
+        const member = membership[0];
+        const riskFactors: RiskIndicators['riskFactors'] = [];
+        let riskScore = 0;
+
+        // Analyze check-in frequency (20% weight)
+        const checkinRate = recentCheckins[0].count / lookbackDays;
+        if (checkinRate < 0.3) {
+            riskFactors.push({
+                type: 'low_checkin_frequency',
+                severity: checkinRate < 0.1 ? 'critical' : 'high',
+                description: `Only ${(checkinRate * 100).toFixed(0)}% check-in rate in last ${lookbackDays} days`,
+                value: checkinRate,
+                trend: 'declining'
+            });
+            riskScore += checkinRate < 0.1 ? 25 : 15;
+        }
+
+        // Analyze attendance (25% weight)
+        const attendanceRate = recentAttendance[0].total > 0
+            ? recentAttendance[0].attended / recentAttendance[0].total
+            : 0;
+
+        if (attendanceRate < 0.5) {
+            riskFactors.push({
+                type: 'poor_attendance',
+                severity: attendanceRate < 0.3 ? 'critical' : 'high',
+                description: `Only ${(attendanceRate * 100).toFixed(0)}% attendance rate`,
+                value: attendanceRate,
+                trend: 'declining'
+            });
+            riskScore += attendanceRate < 0.3 ? 30 : 20;
+        }
+
+        // Analyze wellness trends (20% weight)
+        if (wellnessAvg[0].avgEnergy && Number(wellnessAvg[0].avgEnergy) < 5) {
+            riskFactors.push({
+                type: 'low_energy_wellness',
+                severity: Number(wellnessAvg[0].avgEnergy) < 3 ? 'critical' : 'medium',
+                description: `Average energy level: ${Number(wellnessAvg[0].avgEnergy).toFixed(1)}/10`,
+                value: Number(wellnessAvg[0].avgEnergy),
+                trend: 'declining'
+            });
+            riskScore += Number(wellnessAvg[0].avgEnergy) < 3 ? 25 : 15;
+        }
+
+        // Analyze stress levels
+        if (wellnessAvg[0].avgStress && Number(wellnessAvg[0].avgStress) > 7) {
+            riskFactors.push({
+                type: 'high_stress_levels',
+                severity: Number(wellnessAvg[0].avgStress) > 8 ? 'high' : 'medium',
+                description: `Average stress level: ${Number(wellnessAvg[0].avgStress).toFixed(1)}/10`,
+                value: Number(wellnessAvg[0].avgStress),
+                trend: 'stable'
+            });
+            riskScore += Number(wellnessAvg[0].avgStress) > 8 ? 15 : 10;
+        }
+
+        // Analyze performance stagnation (15% weight)
+        if (performanceData[0].count === 0) {
+            riskFactors.push({
+                type: 'no_recent_prs',
+                severity: 'medium',
+                description: `No PRs achieved in last ${lookbackDays} days`,
+                value: 0,
+                trend: 'declining'
+            });
+            riskScore += 10;
+        }
+
+        // Analyze workout feedback (10% weight)
+        if (recentWods[0].avgEnjoyment && Number(recentWods[0].avgEnjoyment) < 6) {
+            riskFactors.push({
+                type: 'low_workout_enjoyment',
+                severity: Number(recentWods[0].avgEnjoyment) < 4 ? 'high' : 'medium',
+                description: `Average workout enjoyment: ${Number(recentWods[0].avgEnjoyment).toFixed(1)}/10`,
+                value: Number(recentWods[0].avgEnjoyment),
+                trend: 'declining'
+            });
+            riskScore += Number(recentWods[0].avgEnjoyment) < 4 ? 15 : 8;
+        }
+
+        // Analyze membership tenure (10% weight)
+        const membershipDays = Math.floor((new Date().getTime() - member.joinedAt.getTime()) / (1000 * 60 * 60 * 24));
+        if (membershipDays < 90) {
+            riskFactors.push({
+                type: 'new_member_risk',
+                severity: 'medium',
+                description: `New member (${membershipDays} days)`,
+                value: membershipDays,
+                trend: 'stable'
+            });
+            riskScore += 10;
+        }
+
+        // Cap risk score at 100
+        riskScore = Math.min(riskScore, 100);
+
+        const recommendations: string[] = [];
+
+        if (includeRecommendations) {
+            // Generate personalized recommendations based on risk factors
+            if (riskFactors.some(f => f.type === 'low_checkin_frequency')) {
+                recommendations.push("Schedule a check-in conversation to understand barriers to daily engagement");
+            }
+
+            if (riskFactors.some(f => f.type === 'poor_attendance')) {
+                recommendations.push("Review class schedule preferences and potential scheduling conflicts");
+            }
+
+            if (riskFactors.some(f => f.type === 'low_energy_wellness')) {
+                recommendations.push("Discuss sleep habits and recovery strategies");
+            }
+
+            if (riskFactors.some(f => f.type === 'high_stress_levels')) {
+                recommendations.push("Consider stress management techniques and workout scaling");
+            }
+
+            if (riskFactors.some(f => f.type === 'no_recent_prs')) {
+                recommendations.push("Review goals and create achievable PR targets");
+            }
+
+            if (riskFactors.some(f => f.type === 'low_workout_enjoyment')) {
+                recommendations.push("Explore workout modifications and movement preferences");
+            }
+
+            if (riskFactors.some(f => f.type === 'new_member_risk')) {
+                recommendations.push("Increase coaching touchpoints and community integration activities");
+            }
+
+            // Add general recommendations based on risk level
+            if (riskScore > 70) {
+                recommendations.push("URGENT: Schedule immediate one-on-one coaching session");
+                recommendations.push("Consider temporary training program adjustment");
+            } else if (riskScore > 40) {
+                recommendations.push("Schedule check-in within next week");
+                recommendations.push("Monitor progress closely over next 2 weeks");
+            }
+        }
+
+        return {
+            membershipId: athleteId,
+            riskScore,
+            riskFactors,
+            recommendations,
+            lastUpdated: new Date()
+        };
+    }
+
+    /**
+     * Get athletes at risk of churning (core SaaS dashboard feature)
+     */
+    static async calculateAtRiskAthletes(
+        boxId: string,
+        options: {
+            riskThreshold?: number;
+            limit?: number;
+            sortBy?: 'risk_score' | 'last_checkin' | 'attendance_rate';
+            includeLowRisk?: boolean;
+        } = {}
+    ) {
+        const {
+            riskThreshold = 40,
+            limit = 50,
+            sortBy = 'risk_score',
+            includeLowRisk = false
+        } = options;
+
+        // Get all active memberships for the box
+        const memberships = await db
+            .select()
+            .from(boxMemberships)
+            .where(
+                and(
+                    eq(boxMemberships.boxId, boxId),
+                    eq(boxMemberships.isActive, true)
+                )
+            )
+            .limit(limit);
+
+        // Calculate risk scores for each athlete
+        const athleteRisks = await Promise.all(
+            memberships.map(async (membership) => {
+                const riskData = await this.calculateRetentionRisk(boxId, membership.id);
+                return {
+                    membership,
+                    ...riskData
+                };
+            })
+        );
+
+        // Filter based on risk threshold
+        const filteredAthletes = includeLowRisk
+            ? athleteRisks
+            : athleteRisks.filter(athlete => athlete.riskScore >= riskThreshold);
+
+        // Sort based on specified criteria
+        filteredAthletes.sort((a, b) => {
+            switch (sortBy) {
+                case 'risk_score':
+                    return b.riskScore - a.riskScore;
+                case 'last_checkin':
+                    return (a.membership.lastCheckinDate?.getTime() || 0) -
+                        (b.membership.lastCheckinDate?.getTime() || 0);
+                case 'attendance_rate':
+                    // This would require additional attendance calculation
+                    return b.riskScore - a.riskScore; // Fallback to risk score
+                default:
+                    return b.riskScore - a.riskScore;
+            }
+        });
+
+        return filteredAthletes;
+    }
+
+    /**
+     * Get at-risk athletes for a box - Using vw_athlete_risk_overview (uses materialized view)
      */
     static async getAtRiskAthletes(
         boxId: string,
@@ -109,6 +406,147 @@ export class AnalyticsService {
             .where(and(...conditions))
             .orderBy(desc(vwAthleteRiskOverview.overallRiskScore))
             .limit(limit);
+    }
+
+    /**
+     * Get box analytics snapshots (pre-computed snapshots)
+     */
+    static async getBoxAnalyticsSnapshots(
+        boxId: string,
+        period: AnalyticsPeriod = "weekly",
+        limit: number = 12
+    ) {
+        return db
+            .select()
+            .from(boxAnalytics)
+            .where(and(
+                eq(boxAnalytics.boxId, boxId),
+                eq(boxAnalytics.period, period)
+            ))
+            .orderBy(desc(boxAnalytics.periodStart))
+            .limit(limit);
+    }
+
+    /**
+     * Get comprehensive box analytics (owner dashboard)
+     */
+    static async getBoxAnalytics(
+        boxId: string,
+        options: {
+            period?: 'week' | 'month' | 'quarter' | 'year';
+            includeComparisons?: boolean;
+        } = {}
+    ) {
+        const { period = 'month', includeComparisons = true } = options;
+
+        const daysMap = {
+            week: 7,
+            month: 30,
+            quarter: 90,
+            year: 365
+        };
+
+        const days = daysMap[period];
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - days);
+
+        const [
+            totalAthletes,
+            activeAthletes,
+            avgWellness,
+            retentionMetrics,
+            performanceMetrics
+        ] = await Promise.all([
+            db.select({ count: count() })
+                .from(boxMemberships)
+                .where(eq(boxMemberships.boxId, boxId)),
+
+            db.select({ count: count() })
+                .from(boxMemberships)
+                .where(
+                    and(
+                        eq(boxMemberships.boxId, boxId),
+                        eq(boxMemberships.isActive, true),
+                        gte(boxMemberships.lastCheckinDate || sql`'1970-01-01'::timestamp`, startDate)
+                    )
+                ),
+
+            db.select({
+                avgEnergy: avg(athleteWellnessCheckins.energyLevel),
+                avgStress: avg(athleteWellnessCheckins.stressLevel),
+                avgReadiness: avg(athleteWellnessCheckins.workoutReadiness),
+                totalCheckins: count()
+            })
+                .from(athleteWellnessCheckins)
+                .where(
+                    and(
+                        eq(athleteWellnessCheckins.boxId, boxId),
+                        gte(athleteWellnessCheckins.checkinDate, startDate)
+                    )
+                ),
+
+            db.select({
+                checkinStreak: avg(boxMemberships.checkinStreak),
+                avgTotalCheckins: avg(boxMemberships.totalCheckins)
+            })
+                .from(boxMemberships)
+                .where(
+                    and(
+                        eq(boxMemberships.boxId, boxId),
+                        eq(boxMemberships.isActive, true)
+                    )
+                ),
+
+            Promise.all([
+                db.select({ count: count() })
+                    .from(athletePrs)
+                    .where(
+                        and(
+                            eq(athletePrs.boxId, boxId),
+                            gte(athletePrs.achievedAt, startDate)
+                        )
+                    ),
+                db.select({ count: count() })
+                    .from(athleteBenchmarks)
+                    .where(
+                        and(
+                            eq(athleteBenchmarks.boxId, boxId),
+                            gte(athleteBenchmarks.achievedAt, startDate)
+                        )
+                    )
+            ])
+        ]);
+
+        const [totalPrs, totalBenchmarks] = performanceMetrics;
+
+        return {
+            period,
+            summary: {
+                totalAthletes: totalAthletes[0].count,
+                activeAthletes: activeAthletes[0].count,
+                retentionRate: totalAthletes[0].count > 0
+                    ? Math.round((activeAthletes[0].count / totalAthletes[0].count) * 100)
+                    : 0,
+                avgCheckinStreak: Math.round(Number(retentionMetrics[0].checkinStreak || 0)),
+            },
+            wellness: {
+                avgEnergyLevel: Math.round(Number(avgWellness[0].avgEnergy || 0) * 10) / 10,
+                avgStressLevel: Math.round(Number(avgWellness[0].avgStress || 0) * 10) / 10,
+                avgWorkoutReadiness: Math.round(Number(avgWellness[0].avgReadiness || 0) * 10) / 10,
+                totalCheckins: avgWellness[0].totalCheckins,
+                checkinRate: totalAthletes[0].count > 0
+                    ? Math.round((avgWellness[0].totalCheckins / (totalAthletes[0].count * days)) * 100)
+                    : 0
+            },
+            performance: {
+                totalPrs: totalPrs[0].count,
+                totalBenchmarks: totalBenchmarks[0].count,
+                avgPrsPerAthlete: activeAthletes[0].count > 0
+                    ? Math.round((totalPrs[0].count / activeAthletes[0].count) * 10) / 10
+                    : 0
+            },
+            generatedAt: new Date()
+        };
     }
 
     /**
@@ -291,25 +729,6 @@ export class AnalyticsService {
         }
 
         return intervention;
-    }
-
-    /**
-     * Get box analytics snapshots
-     */
-    static async getBoxAnalytics(
-        boxId: string,
-        period: AnalyticsPeriod = "weekly",
-        limit: number = 12
-    ) {
-        return db
-            .select()
-            .from(boxAnalytics)
-            .where(and(
-                eq(boxAnalytics.boxId, boxId),
-                eq(boxAnalytics.period, period)
-            ))
-            .orderBy(desc(boxAnalytics.periodStart))
-            .limit(limit);
     }
 
     /**
@@ -795,5 +1214,189 @@ export class AnalyticsService {
             .where(eq(athleteInterventions.boxId, boxId))
             .orderBy(desc(athleteInterventions.interventionDate))
             .limit(limit);
+    }
+
+    /**
+     * Get billing analytics and insights
+     */
+    static async getBillingAnalytics(boxId: string, timeframe: "30d" | "90d" | "12m" = "30d") {
+        const endDate = new Date();
+        const startDate = new Date();
+
+        switch (timeframe) {
+            case "30d":
+                startDate.setDate(endDate.getDate() - 30);
+                break;
+            case "90d":
+                startDate.setDate(endDate.getDate() - 90);
+                break;
+            case "12m":
+                startDate.setFullYear(endDate.getFullYear() - 1);
+                break;
+        }
+
+        const [totalSpentResult, orderCountResult, averageOrderResult] = await Promise.all([
+            db
+                .select({ total: sum(orders.amount) })
+                .from(orders)
+                .where(and(
+                    eq(orders.boxId, boxId),
+                    eq(orders.status, "paid"),
+                    gte(orders.createdAt, startDate),
+                    lte(orders.createdAt, endDate)
+                )),
+            db
+                .select({ count: count() })
+                .from(orders)
+                .where(and(
+                    eq(orders.boxId, boxId),
+                    eq(orders.status, "paid"),
+                    gte(orders.createdAt, startDate),
+                    lte(orders.createdAt, endDate)
+                )),
+            db
+                .select({ average: sql<number>`AVG(${orders.amount})` })
+                .from(orders)
+                .where(and(
+                    eq(orders.boxId, boxId),
+                    eq(orders.status, "paid"),
+                    gte(orders.createdAt, startDate),
+                    lte(orders.createdAt, endDate)
+                ))
+        ]);
+
+        const totalSpent = totalSpentResult[0]?.total ?? 0;
+        const orderCount = orderCountResult[0]?.count ?? 0;
+        const averageOrder = averageOrderResult[0]?.average ?? 0;
+
+        return {
+            timeframe,
+            period: { start: startDate, end: endDate },
+            summary: {
+                totalSpent,
+                totalSpentFormatted: `$${(Number(totalSpent) / 100).toFixed(2)}`,
+                orderCount,
+                averageOrderValue: Math.round(Number(averageOrder)),
+                averageOrderValueFormatted: `$${(Number(averageOrder) / 100).toFixed(2)}`
+            }
+        };
+    }
+
+    /**
+     * Enhanced billing history with comprehensive filtering
+     */
+    static async getBillingHistory(
+        boxId: string,
+        options: {
+            limit?: number;
+            offset?: number;
+            orderType?: string;
+            status?: string;
+            dateRange?: { start: Date; end: Date };
+        } = {}
+    ) {
+        const { limit = 20, offset = 0, orderType, status, dateRange } = options;
+
+        // Build where conditions
+        let whereConditions = [eq(orders.boxId, boxId)];
+
+        if (orderType) {
+            whereConditions.push(eq(orders.orderType, orderType));
+        }
+
+        if (status) {
+            whereConditions.push(eq(orders.status, status));
+        }
+
+        if (dateRange) {
+            whereConditions.push(
+                gte(orders.createdAt, dateRange.start),
+                lte(orders.createdAt, dateRange.end)
+            );
+        }
+
+        const [ordersData, totalCountResult] = await Promise.all([
+            db.query.orders.findMany({
+                where: and(...whereConditions),
+                orderBy: desc(orders.createdAt),
+                limit,
+                offset,
+                with: {
+                    subscription: {
+                        with: {
+                            plan: true
+                        }
+                    },
+                    customerProfile: true,
+                },
+            }),
+            db
+                .select({ count: count() })
+                .from(orders)
+                .where(and(...whereConditions))
+        ]);
+
+        const totalCount = totalCountResult[0]?.count ?? 0;
+
+        // Enhanced financial calculations
+        const paidOrders = ordersData.filter(order => order.status === "paid");
+        const totalSpent = paidOrders.reduce((sum, order) => sum + (order.amount ?? 0), 0);
+        const totalRefunded = ordersData
+            .filter(order => order.refundedAmount && order.refundedAmount > 0)
+            .reduce((sum, order) => sum + (order.refundedAmount ?? 0), 0);
+
+        // Monthly spend calculation
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        const monthlySpend = ordersData
+            .filter(order => {
+                const orderDate = new Date(order.createdAt);
+                return orderDate >= thirtyDaysAgo && order.status === "paid";
+            })
+            .reduce((sum, order) => sum + (order.amount ?? 0), 0);
+
+        // Category breakdown
+        const categoryBreakdown = ordersData.reduce((acc, order) => {
+            const type = order.orderType || "unknown";
+            if (!acc[type]) {
+                acc[type] = { count: 0, amount: 0 };
+            }
+            acc[type].count++;
+            if (order.status === "paid") {
+                acc[type].amount += order.amount ?? 0;
+            }
+            return acc;
+        }, {} as Record<string, { count: number; amount: number }>);
+
+        return {
+            orders: ordersData.map(order => ({
+                ...order,
+                amountFormatted: `${((order.amount ?? 0) / 100).toFixed(2)}`,
+                refundedAmountFormatted: order.refundedAmount
+                    ? `${(order.refundedAmount / 100).toFixed(2)}`
+                    : null,
+            })),
+            pagination: {
+                total: totalCount,
+                limit,
+                offset,
+                hasMore: (offset + limit) < totalCount,
+                page: Math.floor(offset / limit) + 1,
+                totalPages: Math.ceil(totalCount / limit)
+            },
+            summary: {
+                totalSpent,
+                totalSpentFormatted: `${(totalSpent / 100).toFixed(2)}`,
+                totalRefunded,
+                totalRefundedFormatted: `${(totalRefunded / 100).toFixed(2)}`,
+                monthlySpend,
+                monthlySpendFormatted: `${(monthlySpend / 100).toFixed(2)}`,
+                averageOrderValue: paidOrders.length > 0
+                    ? Math.round(totalSpent / paidOrders.length)
+                    : 0,
+                categoryBreakdown
+            },
+        };
     }
 }

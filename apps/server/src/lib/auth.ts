@@ -259,7 +259,15 @@ async function handleOrderPaid(order: any) {
     }
 
     const subscriptionId = order.subscription_id ? await getSubscriptionId(order.subscription_id) : null;
-    const productId = order.product_id;// Default fallback
+    const productId = order.product_id; // Default fallback
+
+    // Determine order type based on billing reason or other logic
+    // Example: Assume subscription orders are 'subscription', one-time purchases are 'addon' or 'onboarding'
+    let orderType = 'addon'; // Default
+    if (order.billing_reason === "subscription_create" || order.billing_reason === "subscription_cycle") {
+        orderType = 'subscription';
+    }
+    // Add more logic here if needed to differentiate order types
 
     // Insert order record
     await db.insert(schema.orders).values({
@@ -268,6 +276,10 @@ async function handleOrderPaid(order: any) {
         customerProfileId: customerProfile.id,
         subscriptionId: subscriptionId,
         polarProductId: productId,
+        // --- Added Required Fields ---
+        orderType: orderType, // Provide the required 'orderType'
+        description: order.description || `Order ${order.id}`, // Provide a default description if needed
+        // --- End Added Fields ---
         status: "paid",
         amount: order.total_amount,
         currency: order.currency,
@@ -320,6 +332,10 @@ async function activateSubscription(subscriptionData: any) {
         boxId: customerProfile.boxId,
         customerProfileId: customerProfile.id,
         polarProductId: productId,
+        // --- Added Required Fields ---
+        planId: plan.id, // Reference the plan ID (assuming this is correct and plan.id exists)
+        planVersion: plan.version ?? 1, // Provide 'planVersion', defaulting to 1 if not in plan object
+        // --- End Added Fields ---
         status: subscriptionData.status,
         currentPeriodStart: new Date(subscriptionData.current_period_start * 1000), // Assuming Polar uses Unix timestamps
         currentPeriodEnd: new Date(subscriptionData.current_period_end * 1000),
@@ -329,11 +345,11 @@ async function activateSubscription(subscriptionData: any) {
         amount: subscriptionData.amount,
         interval: subscriptionData.recurring_interval,
         metadata: subscriptionData.metadata ? JSON.stringify(subscriptionData.metadata) : null,
-        planId: plan.id, // Reference the plan ID instead of tier
+        // planId: plan.id, // Moved up and marked as added
         lastSyncedAt: new Date(),
         updatedAt: new Date(),
     }).onConflictDoUpdate({
-        target: schema.subscriptions.polarSubscriptionId,
+        target: schema.subscriptions.polarSubscriptionId, // Assuming polarSubscriptionId is the correct unique identifier
         set: {
             status: subscriptionData.status,
             currentPeriodStart: new Date(subscriptionData.current_period_start * 1000),
@@ -341,7 +357,8 @@ async function activateSubscription(subscriptionData: any) {
             cancelAtPeriodEnd: subscriptionData.cancel_at_period_end || false,
             canceledAt: subscriptionData.canceled_at ? new Date(subscriptionData.canceled_at * 1000) : null,
             amount: subscriptionData.amount,
-            planId: plan.id, // Update plan ID instead of tier
+            planId: plan.id, // Update plan ID
+            planVersion: plan.version ?? 1, // Update plan version
             lastSyncedAt: new Date(),
             updatedAt: new Date(),
         }
