@@ -1,4 +1,4 @@
-﻿// db/schema/analytics.ts - Enhanced version with missing MVP tables and consistency fixes
+﻿// db/schema/analytics.ts - Optimized version with improved indexing
 import {
     pgTable,
     text,
@@ -80,19 +80,20 @@ export const athleteRiskScores = pgTable("athlete_risk_scores", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
-    // Enhanced indexing for performance
+    // Optimized indexing for performance
     boxMembershipIdx: index("athlete_risk_scores_box_membership_idx").on(table.boxId, table.membershipId),
     riskLevelIdx: index("athlete_risk_scores_risk_level_idx").on(table.riskLevel),
-    overallScoreIdx: index("athlete_risk_scores_overall_score_idx").on(table.overallRiskScore),
     calculatedAtIdx: index("athlete_risk_scores_calculated_at_idx").on(table.calculatedAt),
     validUntilIdx: index("athlete_risk_scores_valid_until_idx").on(table.validUntil),
-    membershipIdIdx: index("athlete_risk_scores_membership_id_idx").on(table.membershipId),
-    boxIdIdx: index("athlete_risk_scores_box_id_idx").on(table.boxId),
-    churnProbabilityIdx: index("athlete_risk_scores_churn_probability_idx").on(table.churnProbability),
+
+    // NEW: Composite index for getting latest risk score per membership
+    membershipCalculatedAtIdx: index("athlete_risk_scores_membership_calculated_at_idx")
+        .on(table.membershipId, table.calculatedAt.desc()),
+
     // Composite indexes for common queries
     boxRiskLevelIdx: index("athlete_risk_scores_box_risk_level_idx").on(table.boxId, table.riskLevel),
-    validScoresIdx: index("athlete_risk_scores_valid_idx").on(table.validUntil, table.calculatedAt)
-        .where(sql`valid_until > NOW()`),
+    validScoresIdx: index("athlete_risk_scores_valid_idx").on(table.validUntil, table.calculatedAt),
+
     // Constraints
     overallScoreRange: check(
         "overall_risk_score_range",
@@ -164,18 +165,15 @@ export const athleteAlerts = pgTable("athlete_alerts", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
-    // Enhanced indexing for performance
+    // Optimized indexing for performance
     boxMembershipIdx: index("athlete_alerts_box_membership_idx").on(table.boxId, table.membershipId),
     statusIdx: index("athlete_alerts_status_idx").on(table.status),
     severityIdx: index("athlete_alerts_severity_idx").on(table.severity),
     assignedCoachIdx: index("athlete_alerts_assigned_coach_idx").on(table.assignedCoachId),
     followUpIdx: index("athlete_alerts_follow_up_idx").on(table.followUpAt),
-    membershipIdIdx: index("athlete_alerts_membership_id_idx").on(table.membershipId),
-    boxIdIdx: index("athlete_alerts_box_id_idx").on(table.boxId),
     alertTypeIdx: index("athlete_alerts_alert_type_idx").on(table.alertType),
-    acknowledgedByIdx: index("athlete_alerts_acknowledged_by_idx").on(table.acknowledgedById),
-    resolvedByIdx: index("athlete_alerts_resolved_by_idx").on(table.resolvedById),
     createdAtIdx: index("athlete_alerts_created_at_idx").on(table.createdAt),
+
     // Composite indexes for common queries
     boxStatusSeverityIdx: index("athlete_alerts_box_status_severity_idx").on(
         table.boxId, table.status, table.severity),
@@ -183,8 +181,8 @@ export const athleteAlerts = pgTable("athlete_alerts", {
         table.assignedCoachId, table.status).where(sql`status = 'active'`),
     membershipActiveIdx: index("athlete_alerts_membership_active_idx").on(
         table.membershipId, table.status).where(sql`status = 'active'`),
-    upcomingFollowUpsIdx: index("athlete_alerts_upcoming_follow_ups_idx").on(table.followUpAt)
-        .where(sql`follow_up_at <= NOW() + INTERVAL '1 day' AND status = 'active'`),
+    upcomingFollowUpsIdx: index("athlete_alerts_upcoming_follow_ups_idx").on(table.followUpAt),
+
     // Constraints
     remindersSentPositive: check(
         "athlete_alerts_reminders_sent_positive",
@@ -221,23 +219,20 @@ export const athleteInterventions = pgTable("athlete_interventions", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
-    // Enhanced indexing for performance
+    // Optimized indexing for performance
     boxMembershipIdx: index("athlete_interventions_box_membership_idx").on(table.boxId, table.membershipId),
     coachIdx: index("athlete_interventions_coach_idx").on(table.coachId),
     interventionDateIdx: index("athlete_interventions_intervention_date_idx").on(table.interventionDate),
-    membershipIdIdx: index("athlete_interventions_membership_id_idx").on(table.membershipId),
-    boxIdIdx: index("athlete_interventions_box_id_idx").on(table.boxId),
     alertIdIdx: index("athlete_interventions_alert_id_idx").on(table.alertId),
-    interventionTypeIdx: index("athlete_interventions_intervention_type_idx").on(table.interventionType),
-    outcomeIdx: index("athlete_interventions_outcome_idx").on(table.outcome),
     followUpAtIdx: index("athlete_interventions_follow_up_at_idx").on(table.followUpAt),
-    followUpRequiredIdx: index("athlete_interventions_follow_up_required_idx").on(table.followUpRequired),
-    followUpCompletedIdx: index("athlete_interventions_follow_up_completed_idx").on(table.followUpCompleted),
+
+    // NEW: Composite index for getting interventions per membership, newest first
+    membershipInterventionDateIdx: index("athlete_interventions_membership_intervention_date_idx")
+        .on(table.membershipId, table.interventionDate.desc()),
+
     // Composite indexes for common queries
     coachInterventionDateIdx: index("athlete_interventions_coach_intervention_date_idx").on(
         table.coachId, table.interventionDate),
-    membershipOutcomeIdx: index("athlete_interventions_membership_outcome_idx").on(
-        table.membershipId, table.outcome),
     pendingFollowUpsIdx: index("athlete_interventions_pending_follow_ups_idx").on(
         table.followUpRequired, table.followUpCompleted, table.followUpAt)
         .where(sql`follow_up_required = true AND follow_up_completed = false`),
@@ -271,22 +266,22 @@ export const athleteMilestones = pgTable("athlete_milestones", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
-    // Enhanced indexing for performance
+    // Optimized indexing for performance
     boxMembershipIdx: index("athlete_milestones_box_membership_idx").on(table.boxId, table.membershipId),
     milestoneTypeIdx: index("athlete_milestones_milestone_type_idx").on(table.milestoneType),
     achievedAtIdx: index("athlete_milestones_achieved_at_idx").on(table.achievedAt),
-    membershipIdIdx: index("athlete_milestones_membership_id_idx").on(table.membershipId),
-    boxIdIdx: index("athlete_milestones_box_id_idx").on(table.boxId),
     categoryIdx: index("athlete_milestones_category_idx").on(table.category),
-    celebratedIdx: index("athlete_milestones_celebrated_idx").on(table.celebrated),
-    celebrationTypeIdx: index("athlete_milestones_celebration_type_idx").on(table.celebrationType),
+
+    // NEW: Composite index for getting milestones per membership, newest first
+    membershipAchievedAtIdx: index("athlete_milestones_membership_achieved_at_idx")
+        .on(table.membershipId, table.achievedAt.desc()),
+
     // Composite indexes for common queries
     boxMilestoneTypeIdx: index("athlete_milestones_box_milestone_type_idx").on(
         table.boxId, table.milestoneType),
-    membershipAchievedIdx: index("athlete_milestones_membership_achieved_idx").on(
-        table.membershipId, table.achievedAt),
     uncelebratedIdx: index("athlete_milestones_uncelebrated_idx").on(table.celebrated, table.achievedAt)
         .where(sql`celebrated = false`),
+
     // Constraints
     improvementPercentPositive: check(
         "athlete_milestones_improvement_percent_positive",
@@ -340,18 +335,18 @@ export const boxAnalytics = pgTable("box_analytics", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
-    // Enhanced indexing for performance
+    // Optimized indexing for performance
     boxPeriodIdx: index("box_analytics_box_period_idx").on(table.boxId, table.period, table.periodStart),
     periodStartIdx: index("box_analytics_period_start_idx").on(table.periodStart),
-    boxIdIdx: index("box_analytics_box_id_idx").on(table.boxId),
-    periodIdx: index("box_analytics_period_idx").on(table.period),
-    periodEndIdx: index("box_analytics_period_end_idx").on(table.periodEnd),
+
     // Composite indexes for analytics queries
     boxPeriodDateRangeIdx: index("box_analytics_box_period_date_range_idx").on(
         table.boxId, table.period, table.periodStart, table.periodEnd),
+
     // Unique constraint to prevent duplicate analytics for same period
     boxPeriodUnique: unique("box_analytics_box_period_unique").on(
         table.boxId, table.period, table.periodStart),
+
     // Constraints
     totalAthletesPositive: check(
         "box_analytics_total_athletes_positive",
@@ -412,9 +407,10 @@ export const demoEngagementMetrics = pgTable("demo_engagement_metrics", {
     roleIdx: index("demo_engagement_metrics_role_idx").on(table.role),
     createdAtIdx: index("demo_engagement_metrics_created_at_idx").on(table.createdAt),
     conversionEventIdx: index("demo_engagement_metrics_conversion_event_idx").on(table.conversionEvent),
-    dropOffPointIdx: index("demo_engagement_metrics_drop_off_point_idx").on(table.dropOffPoint),
-    // Composite indexes
+
+    // Composite index
     boxRoleIdx: index("demo_engagement_metrics_box_role_idx").on(table.boxId, table.role),
+
     // Constraints
     demoDurationPositive: check(
         "demo_engagement_demo_duration_positive",
@@ -455,11 +451,8 @@ export const riskFactorHistory = pgTable("risk_factor_history", {
     riskScoreIdIdx: index("risk_factor_history_risk_score_id_idx").on(table.riskScoreId),
     membershipIdIdx: index("risk_factor_history_membership_id_idx").on(table.membershipId),
     factorTypeIdx: index("risk_factor_history_factor_type_idx").on(table.factorType),
-    contributionIdx: index("risk_factor_history_contribution_idx").on(table.contribution),
     createdAtIdx: index("risk_factor_history_created_at_idx").on(table.createdAt),
-    // Composite indexes
-    membershipFactorIdx: index("risk_factor_history_membership_factor_idx").on(
-        table.membershipId, table.factorType),
+
     // Constraints
     weightRange: check(
         "risk_factor_weight_range",
@@ -487,7 +480,6 @@ export const alertEscalations = pgTable("alert_escalations", {
     escalatedAtIdx: index("alert_escalations_escalated_at_idx").on(table.escalatedAt),
     fromSeverityIdx: index("alert_escalations_from_severity_idx").on(table.fromSeverity),
     toSeverityIdx: index("alert_escalations_to_severity_idx").on(table.toSeverity),
-    autoEscalatedIdx: index("alert_escalations_auto_escalated_idx").on(table.autoEscalated),
 }));
 
 // Relations - Enhanced with proper naming and relationship clarification

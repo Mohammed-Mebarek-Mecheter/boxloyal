@@ -1,4 +1,4 @@
-﻿// db/schema/athletes.ts - Enhanced version with consistency fixes and normalized data
+﻿// db/schema/athletes.ts - Optimized version with improved indexing
 import {
     pgTable,
     text,
@@ -14,7 +14,7 @@ import {
     check,
     unique
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { boxes, boxMemberships, userRoleEnum } from "./core";
 
 // Enhanced Movement Categories
@@ -45,13 +45,6 @@ export const badgeTypeEnum = pgEnum("badge_type", [
     "attendance",
     "consistency",
     "community"
-]);
-
-// Video visibility with consistent enum usage
-export const consentTypeEnum = pgEnum("consent_type", [
-    "coaching",       // Required for any video usage
-    "box_visibility", // Allows sharing within the box
-    "public"          // Allows public sharing (requires coach approval)
 ]);
 
 // Video processing status enum for consistency
@@ -105,11 +98,9 @@ export const movements = pgTable("movements", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     nameIdx: index("movements_name_idx").on(table.name),
     categoryIdx: index("movements_category_idx").on(table.category),
-    isSkillIdx: index("movements_is_skill_idx").on(table.isSkill),
-    isLiftIdx: index("movements_is_lift_idx").on(table.isLift),
-    isStandardIdx: index("movements_is_standard_idx").on(table.isStandard),
     // Unique constraint for standard movements
     nameUnique: unique("movements_name_unique").on(table.name),
 }));
@@ -127,9 +118,9 @@ export const benchmarkWods = pgTable("benchmark_wods", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     nameIdx: index("benchmark_wods_name_idx").on(table.name),
     categoryIdx: index("benchmark_wods_category_idx").on(table.category),
-    isStandardIdx: index("benchmark_wods_is_standard_idx").on(table.isStandard),
 }));
 
 // ENHANCED: Athlete Personal Records with proper video implementation
@@ -165,24 +156,22 @@ export const athletePrs = pgTable("athlete_prs", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
-    // Enhanced indexing
+    // OPTIMIZED: Essential indexes only
     boxMembershipMovementIdx: index("athlete_prs_box_membership_movement_idx").on(
         table.boxId, table.membershipId, table.movementId
     ),
-    boxMovementIdx: index("athlete_prs_box_movement_idx").on(table.boxId, table.movementId),
     publicIdIdx: index("athlete_prs_public_id_idx").on(table.publicId),
     achievedAtIdx: index("athlete_prs_achieved_at_idx").on(table.achievedAt),
-    membershipIdIdx: index("athlete_prs_membership_id_idx").on(table.membershipId),
     gumletAssetIdx: index("athlete_prs_gumlet_asset_idx").on(table.gumletAssetId),
     videoStatusIdx: index("athlete_prs_video_status_idx").on(table.videoProcessingStatus),
-    verifiedIdx: index("athlete_prs_verified_idx").on(table.verifiedByCoach),
-    celebratedIdx: index("athlete_prs_celebrated_idx").on(table.isCelebrated),
-    // Composite indexes for common queries
+
+    // CRITICAL: Composite indexes for common queries
     boxMembershipAchievedIdx: index("athlete_prs_box_membership_achieved_idx").on(
         table.boxId, table.membershipId, table.achievedAt
     ),
+
     // Constraints
-    valuePositive: check(
+    prValuePositive: check(
         "athlete_prs_value_positive",
         sql`${table.value} > 0`
     ),
@@ -202,9 +191,10 @@ export const videoConsents = pgTable("video_consents", {
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     prIdIdx: index("video_consents_pr_id_idx").on(table.prId),
-    membershipIdIdx: index("video_consents_membership_id_idx").on(table.membershipId),
     givenAtIdx: index("video_consents_given_at_idx").on(table.givenAt),
+
     // Unique constraint to prevent duplicate consents
     membershipPrUnique: unique("video_consents_membership_pr_unique").on(table.membershipId, table.prId),
 }));
@@ -220,13 +210,11 @@ export const videoProcessingEvents = pgTable("video_processing_events", {
     metadata: json("metadata"), // Additional Gumlet response data
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     prIdIdx: index("video_processing_events_pr_id_idx").on(table.prId),
     gumletAssetIdx: index("video_processing_events_gumlet_asset_idx").on(table.gumletAssetId),
-    eventTypeIdx: index("video_processing_events_event_type_idx").on(table.eventType),
-    statusIdx: index("video_processing_events_status_idx").on(table.status),
     createdAtIdx: index("video_processing_events_created_at_idx").on(table.createdAt),
-    // Composite index for asset tracking
-    assetEventIdx: index("video_processing_events_asset_event_idx").on(table.gumletAssetId, table.eventType),
+
     // Constraints
     progressRange: check(
         "video_processing_progress_range",
@@ -248,11 +236,11 @@ export const gumletWebhookEvents = pgTable("gumlet_webhook_events", {
     processingError: text("processing_error"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     assetIdIdx: index("gumlet_webhook_events_asset_id_idx").on(table.assetId),
     processedIdx: index("gumlet_webhook_events_processed_idx").on(table.processed),
-    eventTypeIdx: index("gumlet_webhook_events_event_type_idx").on(table.eventType),
-    webhookIdIdx: index("gumlet_webhook_events_webhook_id_idx").on(table.webhookId),
     createdAtIdx: index("gumlet_webhook_events_created_at_idx").on(table.createdAt),
+
     // Index for unprocessed events
     unprocessedIdx: index("gumlet_webhook_events_unprocessed_idx").on(table.processed, table.createdAt)
         .where(sql`processed = false`),
@@ -283,21 +271,20 @@ export const athleteBenchmarks = pgTable("athlete_benchmarks", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxMembershipBenchmarkIdx: index("athlete_benchmarks_box_membership_benchmark_idx").on(
         table.boxId, table.membershipId, table.benchmarkId
     ),
     publicIdIdx: index("athlete_benchmarks_public_id_idx").on(table.publicId),
     achievedAtIdx: index("athlete_benchmarks_achieved_at_idx").on(table.achievedAt),
-    membershipIdIdx: index("athlete_benchmarks_membership_id_idx").on(table.membershipId),
-    benchmarkIdIdx: index("athlete_benchmarks_benchmark_id_idx").on(table.benchmarkId),
-    celebratedIdx: index("athlete_benchmarks_celebrated_idx").on(table.isCelebrated),
-    scaledIdx: index("athlete_benchmarks_scaled_idx").on(table.scaled),
-    // Composite indexes
+
+    // CRITICAL: Composite indexes for common queries
     boxMembershipAchievedIdx: index("athlete_benchmarks_box_membership_achieved_idx").on(
         table.boxId, table.membershipId, table.achievedAt
     ),
+
     // Constraints
-    valuePositive: check(
+    benchmarkValuePositive: check(
         "athlete_benchmarks_value_positive",
         sql`${table.value} > 0`
     ),
@@ -332,12 +319,12 @@ export const athleteWellnessCheckins = pgTable("athlete_wellness_checkins", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxMembershipDateIdx: index("athlete_wellness_checkins_box_membership_date_idx").on(
         table.boxId, table.membershipId, table.checkinDate
     ),
     checkinDateIdx: index("athlete_wellness_checkins_checkin_date_idx").on(table.checkinDate),
-    membershipIdIdx: index("athlete_wellness_checkins_membership_id_idx").on(table.membershipId),
-    boxIdIdx: index("athlete_wellness_checkins_box_id_idx").on(table.boxId),
+
     // Constraints for 1-10 scales
     energyLevelRange: check(
         "energy_level_range",
@@ -378,13 +365,12 @@ export const athleteSorenessEntries = pgTable("athlete_soreness_entries", {
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     checkinIdIdx: index("athlete_soreness_entries_checkin_id_idx").on(table.checkinId),
     bodyPartIdx: index("athlete_soreness_entries_body_part_idx").on(table.bodyPart),
-    severityIdx: index("athlete_soreness_entries_severity_idx").on(table.severity),
-    // Composite indexes for analysis
-    checkinBodyPartIdx: index("athlete_soreness_entries_checkin_body_part_idx").on(table.checkinId, table.bodyPart),
+
     // Constraints
-    severityRange: check(
+    sorenessSeverityRange: check(
         "athlete_soreness_severity_range",
         sql`${table.severity} >= 0 AND ${table.severity} <= 10`
     ),
@@ -402,14 +388,12 @@ export const athletePainEntries = pgTable("athlete_pain_entries", {
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     checkinIdIdx: index("athlete_pain_entries_checkin_id_idx").on(table.checkinId),
     bodyPartIdx: index("athlete_pain_entries_body_part_idx").on(table.bodyPart),
-    severityIdx: index("athlete_pain_entries_severity_idx").on(table.severity),
-    painTypeIdx: index("athlete_pain_entries_pain_type_idx").on(table.painType),
-    // Composite indexes for analysis
-    checkinBodyPartIdx: index("athlete_pain_entries_checkin_body_part_idx").on(table.checkinId, table.bodyPart),
+
     // Constraints
-    severityRange: check(
+    painSeverityRange: check(
         "athlete_pain_severity_range",
         sql`${table.severity} >= 0 AND ${table.severity} <= 10`
     ),
@@ -450,14 +434,12 @@ export const wodFeedback = pgTable("wod_feedback", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxMembershipWodIdx: index("wod_feedback_box_membership_wod_idx").on(
         table.boxId, table.membershipId, table.wodDate
     ),
     wodDateIdx: index("wod_feedback_wod_date_idx").on(table.wodDate),
-    membershipIdIdx: index("wod_feedback_membership_id_idx").on(table.membershipId),
-    boxIdIdx: index("wod_feedback_box_id_idx").on(table.boxId),
-    completedIdx: index("wod_feedback_completed_idx").on(table.completed),
-    scalingUsedIdx: index("wod_feedback_scaling_used_idx").on(table.scalingUsed),
+
     // Constraints
     rpeRange: check(
         "wod_feedback_rpe_range",
@@ -471,7 +453,7 @@ export const wodFeedback = pgTable("wod_feedback", {
         "wod_feedback_enjoyment_range",
         sql`${table.enjoymentRating} >= 1 AND ${table.enjoymentRating} <= 10`
     ),
-    durationPositive: check(
+    wodFeedbackDurationPositive: check(
         "wod_feedback_duration_positive",
         sql`${table.workoutDurationMinutes} > 0`
     ),
@@ -487,12 +469,12 @@ export const wodPainEntries = pgTable("wod_pain_entries", {
     notes: text("notes"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     feedbackIdIdx: index("wod_pain_entries_feedback_id_idx").on(table.feedbackId),
     bodyPartIdx: index("wod_pain_entries_body_part_idx").on(table.bodyPart),
-    severityIdx: index("wod_pain_entries_severity_idx").on(table.severity),
-    painTypeIdx: index("wod_pain_entries_pain_type_idx").on(table.painType),
+
     // Constraints
-    severityRange: check(
+    wodPainSeverityRange: check(
         "wod_pain_severity_range",
         sql`${table.severity} >= 0 AND ${table.severity} <= 10`
     ),
@@ -536,22 +518,13 @@ export const wodAttendance = pgTable("wod_attendance", {
     ),
     // Index for class scheduling and reporting
     wodTimeIdx: index("wod_attendance_wod_time_idx").on(table.wodTime),
-    // Index for attendance date-based reporting
-    attendanceDateIdx: index("wod_attendance_attendance_date_idx").on(table.attendanceDate),
     // Index for status filtering
     statusIdx: index("wod_attendance_status_idx").on(table.status),
     // Enhanced indexes
-    membershipIdIdx: index("wod_attendance_membership_id_idx").on(table.membershipId),
-    boxIdIdx: index("wod_attendance_box_id_idx").on(table.boxId),
-    coachMembershipIdIdx: index("wod_attendance_coach_membership_id_idx").on(table.coachMembershipId),
     checkedInAtIdx: index("wod_attendance_checked_in_at_idx").on(table.checkedInAt),
-    rxIdx: index("wod_attendance_rx_idx").on(table.rx),
-    scaledIdx: index("wod_attendance_scaled_idx").on(table.scaled),
-    // Composite indexes for common queries
-    boxStatusDateIdx: index("wod_attendance_box_status_date_idx").on(table.boxId, table.status, table.attendanceDate),
-    membershipStatusIdx: index("wod_attendance_membership_status_idx").on(table.membershipId, table.status),
+
     // Constraints
-    durationPositive: check(
+    wodAttendanceDurationPositive: check(
         "wod_attendance_duration_positive",
         sql`${table.durationMinutes} > 0`
     ),
@@ -579,15 +552,12 @@ export const athleteBadges = pgTable("athlete_badges", {
 
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxMembershipBadgeIdx: index("athlete_badges_box_membership_badge_idx").on(
         table.boxId, table.membershipId, table.badgeType
     ),
     awardedAtIdx: index("athlete_badges_awarded_at_idx").on(table.awardedAt),
-    membershipIdIdx: index("athlete_badges_membership_id_idx").on(table.membershipId),
-    boxIdIdx: index("athlete_badges_box_id_idx").on(table.boxId),
-    badgeTypeIdx: index("athlete_badges_badge_type_idx").on(table.badgeType),
-    tierIdx: index("athlete_badges_tier_idx").on(table.tier),
-    hiddenIdx: index("athlete_badges_hidden_idx").on(table.isHidden),
+
     // Constraints
     tierPositive: check(
         "athlete_badges_tier_positive",
@@ -622,16 +592,13 @@ export const leaderboards = pgTable("leaderboards", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxIdIdx: index("leaderboards_box_id_idx").on(table.boxId),
     typeIdx: index("leaderboards_type_idx").on(table.type),
     activeIdx: index("leaderboards_active_idx").on(table.isActive),
-    movementIdIdx: index("leaderboards_movement_id_idx").on(table.movementId),
-    benchmarkIdIdx: index("leaderboards_benchmark_id_idx").on(table.benchmarkId),
-    createdByIdx: index("leaderboards_created_by_idx").on(table.createdByMembershipId),
     periodStartIdx: index("leaderboards_period_start_idx").on(table.periodStart),
     periodEndIdx: index("leaderboards_period_end_idx").on(table.periodEnd),
-    // Composite indexes
-    boxActiveTypeIdx: index("leaderboards_box_active_type_idx").on(table.boxId, table.isActive, table.type),
+
     // Constraints
     maxEntriesPositive: check(
         "leaderboards_max_entries_positive",
@@ -658,31 +625,27 @@ export const leaderboardEntries = pgTable("leaderboard_entries", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     leaderboardRankIdx: index("leaderboard_entries_leaderboard_rank_idx").on(
         table.leaderboardId, table.rank
     ),
     leaderboardMembershipIdx: index("leaderboard_entries_leaderboard_membership_idx").on(
         table.leaderboardId, table.membershipId
     ),
-    membershipIdIdx: index("leaderboard_entries_membership_id_idx").on(table.membershipId),
-    prIdIdx: index("leaderboard_entries_pr_id_idx").on(table.prId),
-    benchmarkIdIdx: index("leaderboard_entries_benchmark_id_idx").on(table.benchmarkId),
     achievedAtIdx: index("leaderboard_entries_achieved_at_idx").on(table.achievedAt),
+
     // Constraints
     rankPositive: check(
         "leaderboard_entries_rank_positive",
         sql`${table.rank} >= 1`
     ),
-    valuePositive: check(
+    leaderboardValuePositive: check(
         "leaderboard_entries_value_positive",
         sql`${table.value} > 0`
     ),
     // Unique constraint for leaderboard position
     leaderboardRankUnique: unique("leaderboard_entries_leaderboard_rank_unique").on(table.leaderboardId, table.rank),
 }));
-
-// Import sql for where clauses
-import { sql } from "drizzle-orm";
 
 // Relations - Enhanced with proper naming and relationship clarification
 export const movementsRelations = relations(movements, ({ many }) => ({

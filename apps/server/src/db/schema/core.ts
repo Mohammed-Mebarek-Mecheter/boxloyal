@@ -1,4 +1,4 @@
-﻿// db/schema/core.ts - Enhanced version with payment workflow support
+﻿// db/schema/core.ts - Optimized version with improved indexing
 import {
     pgTable,
     text,
@@ -138,30 +138,20 @@ export const boxes = pgTable("boxes", {
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }), // For churn analysis
 }, (table) => ({
-    // Enhanced indexing for performance
+    // OPTIMIZED: Essential indexes only
     slugIdx: index("boxes_slug_idx").on(table.slug),
     publicIdIdx: index("boxes_public_id_idx").on(table.publicId),
-    subscriptionStatusIdx: index("boxes_subscription_status_idx").on(table.subscriptionStatus),
-    statusIdx: index("boxes_status_idx").on(table.status),
     subscriptionEndsAtIdx: index("boxes_subscription_ends_at_idx").on(table.subscriptionEndsAt),
     trialEndsAtIdx: index("boxes_trial_ends_at_idx").on(table.trialEndsAt),
-    polarCustomerIdx: index("boxes_polar_customer_idx").on(table.polarCustomerId),
-    polarSubscriptionIdx: index("boxes_polar_subscription_idx").on(table.polarSubscriptionId),
-    isDemoIdx: index("boxes_is_demo_idx").on(table.isDemo),
     nextBillingDateIdx: index("boxes_next_billing_date_idx").on(table.nextBillingDate),
     graceEndsAtIdx: index("boxes_grace_ends_at_idx").on(table.graceEndsAt),
 
-    // NEW: Critical indexes for payment workflows
-    overageEnabledIdx: index("boxes_overage_enabled_idx").on(table.isOverageEnabled),
-    currentUsageIdx: index("boxes_current_usage_idx").on(table.currentAthleteCount, table.currentCoachCount),
-    limitsIdx: index("boxes_limits_idx").on(table.currentAthleteLimit, table.currentCoachLimit),
+    // CRITICAL: Composite indexes for payment workflows
+    statusSubscriptionIdx: index("boxes_status_subscription_idx").on(table.status, table.subscriptionStatus),
     trialStatusIdx: index("boxes_trial_status_idx").on(table.subscriptionStatus, table.trialEndsAt)
         .where(sql`subscription_status = 'trial'`),
     overLimitIdx: index("boxes_over_limit_idx").on(table.currentAthleteOverage, table.currentCoachOverage)
         .where(sql`current_athlete_overage > 0 OR current_coach_overage > 0`),
-
-    // Composite indexes for common queries
-    statusSubscriptionIdx: index("boxes_status_subscription_idx").on(table.status, table.subscriptionStatus),
 
     // ENHANCED: Constraints for data integrity
     athleteCountPositive: check(
@@ -203,8 +193,7 @@ export const demoPersonas = pgTable("demo_personas", {
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
     boxIdIdx: index("demo_personas_box_id_idx").on(table.boxId),
-    roleIdx: index("demo_personas_role_idx").on(table.role),
-    activeIdx: index("demo_personas_active_idx").on(table.isActive),
+    boxRoleIdx: index("demo_personas_box_role_idx").on(table.boxId, table.role),
 }));
 
 // Demo data snapshots - Enhanced
@@ -217,8 +206,6 @@ export const demoDataSnapshots = pgTable("demo_data_snapshots", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
     boxIdIdx: index("demo_data_snapshots_box_id_idx").on(table.boxId),
-    activeIdx: index("demo_data_snapshots_active_idx").on(table.isActive),
-    versionIdx: index("demo_data_snapshots_version_idx").on(table.version),
 }));
 
 // Demo guided flows - Enhanced
@@ -233,10 +220,7 @@ export const demoGuidedFlows = pgTable("demo_guided_flows", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
-    boxIdIdx: index("demo_guided_flows_box_id_idx").on(table.boxId),
-    roleIdx: index("demo_guided_flows_role_idx").on(table.role),
-    completedIdx: index("demo_guided_flows_completed_idx").on(table.isCompleted),
-    // Composite index for active flows
+    // OPTIMIZED: Essential indexes only
     boxRoleIdx: index("demo_guided_flows_box_role_idx").on(table.boxId, table.role),
 }));
 
@@ -269,18 +253,13 @@ export const boxMemberships = pgTable("box_memberships", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
-    // Enhanced indexing for performance
+    // OPTIMIZED: Essential indexes only
     boxUserIdx: index("box_memberships_box_user_idx").on(table.boxId, table.userId),
-    boxRoleIdx: index("box_memberships_box_role_idx").on(table.boxId, table.role),
     publicIdIdx: index("box_memberships_public_id_idx").on(table.publicId),
     userIdIdx: index("box_memberships_user_id_idx").on(table.userId),
-    boxIdIdx: index("box_memberships_box_id_idx").on(table.boxId),
-    checkinStreakIdx: index("box_memberships_checkin_streak_idx").on(table.checkinStreak),
-    activeIdx: index("box_memberships_active_idx").on(table.isActive),
     joinedAtIdx: index("box_memberships_joined_at_idx").on(table.joinedAt),
-    roleActiveIdx: index("box_memberships_role_active_idx").on(table.role, table.isActive), // NEW: For counting by role
 
-    // Composite indexes for common queries
+    // CRITICAL: Composite indexes for common queries
     boxActiveRoleIdx: index("box_memberships_box_active_role_idx").on(table.boxId, table.isActive, table.role),
 
     // Unique constraint
@@ -313,8 +292,6 @@ export const userProfiles = pgTable("user_profiles", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
-    userIdIdx: index("user_profiles_user_id_idx").on(table.userId),
-    fitnessLevelIdx: index("user_profiles_fitness_level_idx").on(table.fitnessLevel),
     // Constraints
     experiencePositive: check(
         "experience_positive",
@@ -338,14 +315,12 @@ export const boxInvites = pgTable("box_invites", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxIdIdx: index("box_invites_box_id_idx").on(table.boxId),
-    publicIdIdx: index("box_invites_public_id_idx").on(table.publicId),
     tokenIdx: index("box_invites_token_idx").on(table.token),
-    emailIdx: index("box_invites_email_idx").on(table.email),
-    statusIdx: index("box_invites_status_idx").on(table.status),
     expiresAtIdx: index("box_invites_expires_at_idx").on(table.expiresAt),
-    invitedByIdx: index("box_invites_invited_by_idx").on(table.invitedByUserId),
-    // Composite indexes for common queries
+
+    // CRITICAL: Composite indexes for common queries
     boxStatusIdx: index("box_invites_box_status_idx").on(table.boxId, table.status),
     emailStatusIdx: index("box_invites_email_status_idx").on(table.email, table.status),
 }));
@@ -366,14 +341,11 @@ export const boxQrCodes = pgTable("box_qr_codes", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxIdIdx: index("box_qr_codes_box_id_idx").on(table.boxId),
-    publicIdIdx: index("box_qr_codes_public_id_idx").on(table.publicId),
     codeIdx: index("box_qr_codes_code_idx").on(table.code),
-    activeIdx: index("box_qr_codes_active_idx").on(table.isActive),
-    createdByIdx: index("box_qr_codes_created_by_idx").on(table.createdByUserId),
     expiresAtIdx: index("box_qr_codes_expires_at_idx").on(table.expiresAt),
-    // Composite indexes
-    boxActiveIdx: index("box_qr_codes_box_active_idx").on(table.boxId, table.isActive),
+
     // Constraints
     usageCountPositive: check(
         "usage_count_positive",
@@ -401,12 +373,12 @@ export const approvalQueue = pgTable("approval_queue", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxIdIdx: index("approval_queue_box_id_idx").on(table.boxId),
     statusIdx: index("approval_queue_status_idx").on(table.status),
-    userIdIdx: index("approval_queue_user_id_idx").on(table.userId),
     submittedAtIdx: index("approval_queue_submitted_at_idx").on(table.submittedAt),
-    decidedByIdx: index("approval_queue_decided_by_idx").on(table.decidedByUserId),
-    // Composite indexes for common queries
+
+    // CRITICAL: Composite indexes for common queries
     boxStatusIdx: index("approval_queue_box_status_idx").on(table.boxId, table.status),
     userBoxUnique: unique("approval_queue_user_box_unique").on(table.boxId, table.userId),
 }));

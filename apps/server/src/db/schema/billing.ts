@@ -1,4 +1,4 @@
-﻿// db/schema/billing.ts - Enhanced version with consistency fixes and proper constraints
+﻿// db/schema/billing.ts - Optimized version with improved indexing
 import {
     pgTable,
     text,
@@ -44,27 +44,18 @@ export const billingEvents = pgTable("billing_events", {
     nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
     lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
 }, (table) => ({
+    // OPTIMIZED: Reduced to essential indexes only
     boxIdIdx: index("billing_events_box_id_idx").on(table.boxId),
-    eventTypeIdx: index("billing_events_event_type_idx").on(table.eventType),
     polarEventIdx: index("billing_events_polar_event_idx").on(table.polarEventId),
-    statusIdx: index("billing_events_status_idx").on(table.status),
-    processedIdx: index("billing_events_processed_idx").on(table.processed),
     createdAtIdx: index("billing_events_created_at_idx").on(table.createdAt),
-    retryCountIdx: index("billing_events_retry_count_idx").on(table.retryCount),
-    nextRetryAtIdx: index("billing_events_next_retry_at_idx").on(table.nextRetryAt),
-    priorityIdx: index("billing_events_priority_idx").on(table.priority),
-    scheduledForIdx: index("billing_events_scheduled_for_idx").on(table.scheduledFor),
 
-    // NEW: Critical composite indexes for processing queues
+    // CRITICAL: Composite indexes for processing queues
     pendingProcessingIdx: index("billing_events_pending_processing_idx")
         .on(table.status, table.priority, table.scheduledFor)
-        .where(sql`status = 'pending' AND (scheduled_for IS NULL OR scheduled_for <= NOW())`),
+        .where(sql`status = 'pending'`),
     retryableIdx: index("billing_events_retryable_idx")
         .on(table.status, table.retryCount, table.nextRetryAt)
-        .where(sql`status = 'failed' AND retry_count < max_retries AND next_retry_at <= NOW()`),
-    unprocessedIdx: index("billing_events_unprocessed_idx")
-        .on(table.processed, table.createdAt)
-        .where(sql`processed = false`),
+        .where(sql`status = 'failed'`),
 
     // Constraints
     retryCountPositive: check(
@@ -147,20 +138,14 @@ export const subscriptionPlans = pgTable("subscription_plans", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     tierIdx: index("subscription_plans_tier_idx").on(table.tier),
-    versionIdx: index("subscription_plans_version_idx").on(table.version),
-    activeIdx: index("subscription_plans_active_idx").on(table.isActive),
-    currentVersionIdx: index("subscription_plans_current_version_idx").on(table.isCurrentVersion),
-    defaultIdx: index("subscription_plans_default_idx").on(table.isDefault),
-    publicIdx: index("subscription_plans_public_idx").on(table.isPublic),
-    displayOrderIdx: index("subscription_plans_display_order_idx").on(table.displayOrder),
     polarProductIdx: index("subscription_plans_polar_product_idx").on(table.polarProductId),
     polarAnnualProductIdx: index("subscription_plans_polar_annual_product_idx").on(table.polarAnnualProductId),
 
-    // NEW: Composite indexes for pricing queries
-    activeTierIdx: index("subscription_plans_active_tier_idx").on(table.isActive, table.tier),
-    activeDisplayIdx: index("subscription_plans_active_display_idx").on(table.isActive, table.displayOrder),
-    publicActiveIdx: index("subscription_plans_public_active_idx").on(table.isPublic, table.isActive),
+    // CRITICAL: Composite indexes for pricing queries
+    activePublicDisplayIdx: index("subscription_plans_active_public_display_idx")
+        .on(table.isActive, table.isPublic, table.displayOrder),
     tierVersionIdx: index("subscription_plans_tier_version_idx").on(table.tier, table.version),
 
     // Constraints
@@ -239,14 +224,10 @@ export const customerProfiles = pgTable("customer_profiles", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxIdIdx: index("customer_profiles_box_id_idx").on(table.boxId),
     polarCustomerIdx: index("customer_profiles_polar_customer_idx").on(table.polarCustomerId),
     emailIdx: index("customer_profiles_email_idx").on(table.email),
-    isActiveIdx: index("customer_profiles_is_active_idx").on(table.isActive),
-    lastSyncIdx: index("customer_profiles_last_sync_idx").on(table.lastPolarSyncAt),
-
-    // Composite indexes
-    boxActiveIdx: index("customer_profiles_box_active_idx").on(table.boxId, table.isActive),
 }));
 
 // ENHANCED: Subscription records with comprehensive change tracking
@@ -311,34 +292,27 @@ export const subscriptions = pgTable("subscriptions", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Reduced to essential indexes
     boxIdIdx: index("subscriptions_box_id_idx").on(table.boxId),
     polarSubscriptionIdx: index("subscriptions_polar_subscription_idx").on(table.polarSubscriptionId),
-    statusIdx: index("subscriptions_status_idx").on(table.status),
-    currentPeriodEndIdx: index("subscriptions_current_period_end_idx").on(table.currentPeriodEnd),
-    planIdIdx: index("subscriptions_plan_id_idx").on(table.planId),
-    cancelAtPeriodEndIdx: index("subscriptions_cancel_at_period_end_idx").on(table.cancelAtPeriodEnd),
     customerProfileIdIdx: index("subscriptions_customer_profile_id_idx").on(table.customerProfileId),
-    isInTrialIdx: index("subscriptions_is_in_trial_idx").on(table.isInTrial),
-    intervalIdx: index("subscriptions_interval_idx").on(table.interval),
-    lastSyncedAtIdx: index("subscriptions_last_synced_at_idx").on(table.lastSyncedAt),
-    trialEndIdx: index("subscriptions_trial_end_idx").on(table.trialEnd),
+    currentPeriodEndIdx: index("subscriptions_current_period_end_idx").on(table.currentPeriodEnd),
     nextBillingDateIdx: index("subscriptions_next_billing_date_idx").on(table.nextBillingDate),
-    overageEnabledIdx: index("subscriptions_overage_enabled_idx").on(table.overageEnabled),
 
-    // NEW: Critical composite indexes
+    // CRITICAL: Composite indexes for common queries
     boxStatusIdx: index("subscriptions_box_status_idx").on(table.boxId, table.status),
     activeCancellingIdx: index("subscriptions_active_cancelling_idx")
         .on(table.status, table.cancelAtPeriodEnd)
         .where(sql`status = 'active' AND cancel_at_period_end = true`),
     expiringTrialsIdx: index("subscriptions_expiring_trials_idx")
         .on(table.trialEnd, table.isInTrial)
-        .where(sql`is_in_trial = true AND trial_end <= NOW() + INTERVAL '7 days'`),
+        .where(sql`is_in_trial = true`),
     upcomingBillingIdx: index("subscriptions_upcoming_billing_idx")
         .on(table.nextBillingDate, table.status)
-        .where(sql`status = 'active' AND next_billing_date <= NOW() + INTERVAL '3 days'`),
+        .where(sql`status = 'active'`),
 
     // Constraints
-    amountPositive: check(
+    subscriptionAmountPositive: check(
         "subscriptions_amount_positive",
         sql`${table.amount} > 0`
     ),
@@ -385,15 +359,13 @@ export const subscriptionChanges = pgTable("subscription_changes", {
 
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     subscriptionIdIdx: index("subscription_changes_subscription_id_idx").on(table.subscriptionId),
     boxIdIdx: index("subscription_changes_box_id_idx").on(table.boxId),
-    changeTypeIdx: index("subscription_changes_change_type_idx").on(table.changeType),
     effectiveDateIdx: index("subscription_changes_effective_date_idx").on(table.effectiveDate),
-    triggeredByIdx: index("subscription_changes_triggered_by_idx").on(table.triggeredByUserId),
 
     // Composite indexes for reporting
     subscriptionTypeIdx: index("subscription_changes_subscription_type_idx").on(table.subscriptionId, table.changeType),
-    boxTypeIdx: index("subscription_changes_box_type_idx").on(table.boxId, table.changeType),
 }));
 
 // NEW: Overage billing records - critical for usage-based billing
@@ -450,22 +422,16 @@ export const overageBilling = pgTable("overage_billing", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxIdIdx: index("overage_billing_box_id_idx").on(table.boxId),
     subscriptionIdIdx: index("overage_billing_subscription_id_idx").on(table.subscriptionId),
-    statusIdx: index("overage_billing_status_idx").on(table.status),
     billingPeriodStartIdx: index("overage_billing_period_start_idx").on(table.billingPeriodStart),
-    billingPeriodEndIdx: index("overage_billing_period_end_idx").on(table.billingPeriodEnd),
-    polarInvoiceIdx: index("overage_billing_polar_invoice_idx").on(table.polarInvoiceId),
-    invoicedAtIdx: index("overage_billing_invoiced_at_idx").on(table.invoicedAt),
-    paidAtIdx: index("overage_billing_paid_at_idx").on(table.paidAt),
+    statusIdx: index("overage_billing_status_idx").on(table.status),
 
-    // Critical composite indexes for processing
+    // CRITICAL: Composite indexes for processing
     pendingInvoiceIdx: index("overage_billing_pending_invoice_idx")
         .on(table.status, table.totalOverageAmount)
         .where(sql`status = 'calculated' AND total_overage_amount > 0`),
-    retryableIdx: index("overage_billing_retryable_idx")
-        .on(table.status, table.retryCount, table.nextRetryAt)
-        .where(sql`status = 'failed' AND retry_count < 3 AND next_retry_at <= NOW()`),
     billingPeriodIdx: index("overage_billing_period_idx")
         .on(table.billingPeriodStart, table.billingPeriodEnd),
 
@@ -556,19 +522,17 @@ export const orders = pgTable("orders", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxIdIdx: index("orders_box_id_idx").on(table.boxId),
     polarOrderIdx: index("orders_polar_order_idx").on(table.polarOrderId),
-    statusIdx: index("orders_status_idx").on(table.status),
-    paidAtIdx: index("orders_paid_at_idx").on(table.paidAt),
     customerProfileIdIdx: index("orders_customer_profile_id_idx").on(table.customerProfileId),
-    subscriptionIdIdx: index("orders_subscription_id_idx").on(table.subscriptionId),
-    paymentMethodIdx: index("orders_payment_method_idx").on(table.paymentMethod),
-    createdAtIdx: index("orders_created_at_idx").on(table.createdAt),
+    paidAtIdx: index("orders_paid_at_idx").on(table.paidAt),
+
     // Composite indexes for reporting
     boxStatusDateIdx: index("orders_box_status_date_idx").on(table.boxId, table.status, table.createdAt),
-    subscriptionStatusIdx: index("orders_subscription_status_idx").on(table.subscriptionId, table.status),
+
     // Constraints
-    amountPositive: check(
+    orderAmountPositive: check(
         "orders_amount_positive",
         sql`${table.amount} > 0`
     ),
@@ -613,27 +577,17 @@ export const gracePeriods = pgTable("grace_periods", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxIdIdx: index("grace_periods_box_id_idx").on(table.boxId),
     endsAtIdx: index("grace_periods_ends_at_idx").on(table.endsAt),
-    resolvedIdx: index("grace_periods_resolved_idx").on(table.resolved),
-    reasonIdx: index("grace_periods_reason_idx").on(table.reason),
-    severityIdx: index("grace_periods_severity_idx").on(table.severity),
-    notifiedAtIdx: index("grace_periods_notified_at_idx").on(table.notifiedAt),
-    escalationLevelIdx: index("grace_periods_escalation_level_idx").on(table.escalationLevel),
 
-    // Critical composite indexes for automated processing
+    // CRITICAL: Composite indexes for automated processing
     unresolvedExpiringIdx: index("grace_periods_unresolved_expiring_idx")
         .on(table.resolved, table.endsAt, table.severity)
-        .where(sql`resolved = false AND ends_at <= NOW() + INTERVAL '1 day'`),
-    boxActiveIdx: index("grace_periods_box_active_idx")
-        .on(table.boxId, table.resolved)
         .where(sql`resolved = false`),
     needsNotificationIdx: index("grace_periods_needs_notification_idx")
         .on(table.resolved, table.notifiedAt, table.endsAt)
-        .where(sql`resolved = false AND (notified_at IS NULL OR notified_at < NOW() - INTERVAL '24 hours')`),
-    autoResolveIdx: index("grace_periods_auto_resolve_idx")
-        .on(table.autoResolve, table.resolved, table.endsAt)
-        .where(sql`auto_resolve = true AND resolved = false AND ends_at <= NOW()`),
+        .where(sql`resolved = false`),
 
     // Constraints
     warningsSentPositive: check(
@@ -678,29 +632,17 @@ export const usageEvents = pgTable("usage_events", {
 
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxIdIdx: index("usage_events_box_id_idx").on(table.boxId),
     eventTypeIdx: index("usage_events_event_type_idx").on(table.eventType),
     createdAtIdx: index("usage_events_created_at_idx").on(table.createdAt),
-    entityIdIdx: index("usage_events_entity_id_idx").on(table.entityId),
-    entityTypeIdx: index("usage_events_entity_type_idx").on(table.entityType),
-    userIdIdx: index("usage_events_user_id_idx").on(table.userId),
-    meteringKeyIdx: index("usage_events_metering_key_idx").on(table.meteringKey),
-    billableIdx: index("usage_events_billable_idx").on(table.billable),
-    polarEventIdIdx: index("usage_events_polar_event_id_idx").on(table.polarEventId),
-    billingPeriodStartIdx: index("usage_events_billing_period_start_idx").on(table.billingPeriodStart),
-    processedIdx: index("usage_events_processed_idx").on(table.processed),
 
-    // Critical composite indexes for billing aggregation
+    // CRITICAL: Composite indexes for billing aggregation
     boxEventTypePeriodIdx: index("usage_events_box_event_type_period_idx")
         .on(table.boxId, table.eventType, table.billingPeriodStart),
-    billingPeriodIdx: index("usage_events_billing_period_idx")
-        .on(table.billingPeriodStart, table.billingPeriodEnd),
     billableUnprocessedIdx: index("usage_events_billable_unprocessed_idx")
         .on(table.billable, table.processed)
         .where(sql`billable = true AND processed = false`),
-    needsPolarSyncIdx: index("usage_events_needs_polar_sync_idx")
-        .on(table.billable, table.polarEventId)
-        .where(sql`billable = true AND polar_event_id IS NULL`),
 
     // Constraints
     quantityPositive: check(
@@ -745,18 +687,15 @@ export const planChangeRequests = pgTable("plan_change_requests", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     boxIdIdx: index("plan_change_requests_box_id_idx").on(table.boxId),
     subscriptionIdIdx: index("plan_change_requests_subscription_id_idx").on(table.subscriptionId),
     statusIdx: index("plan_change_requests_status_idx").on(table.status),
-    changeTypeIdx: index("plan_change_requests_change_type_idx").on(table.changeType),
-    requestedByIdx: index("plan_change_requests_requested_by_idx").on(table.requestedByUserId),
-    requestedEffectiveDateIdx: index("plan_change_requests_requested_effective_date_idx").on(table.requestedEffectiveDate),
 
     // Composite indexes for processing workflows
     pendingProcessingIdx: index("plan_change_requests_pending_processing_idx")
         .on(table.status, table.requestedEffectiveDate)
-        .where(sql`status = 'approved' AND requested_effective_date <= NOW()`),
-    boxStatusIdx: index("plan_change_requests_box_status_idx").on(table.boxId, table.status),
+        .where(sql`status = 'approved'`),
 }));
 
 // NEW: Payment method management - for tracking customer payment methods
@@ -791,12 +730,9 @@ export const paymentMethods = pgTable("payment_methods", {
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
+    // OPTIMIZED: Essential indexes only
     customerProfileIdIdx: index("payment_methods_customer_profile_id_idx").on(table.customerProfileId),
     boxIdIdx: index("payment_methods_box_id_idx").on(table.boxId),
-    typeIdx: index("payment_methods_type_idx").on(table.type),
-    isDefaultIdx: index("payment_methods_is_default_idx").on(table.isDefault),
-    isActiveIdx: index("payment_methods_is_active_idx").on(table.isActive),
-    isExpiredIdx: index("payment_methods_is_expired_idx").on(table.isExpired),
 
     // Composite indexes
     customerActiveIdx: index("payment_methods_customer_active_idx").on(table.customerProfileId, table.isActive),
