@@ -10,14 +10,15 @@ import {
 } from "@/lib/permissions";
 import { TRPCError } from "@trpc/server";
 
-// Enhanced validation schemas
+// validation schemas
 const videoUploadSchema = z.object({
     gumletAssetId: z.string(),
     consentTypes: z.array(z.enum(["coaching", "box_visibility", "public"])),
-    thumbnailUrl: z.string().url().optional(),
+    thumbnailUrl: z.url().optional(),
     videoDuration: z.number().positive().optional(),
     collectionId: z.string().optional(),
     gumletMetadata: z.any().optional(),
+    customThumbnailTime: z.number().min(0).optional(),
 });
 
 const bodyPartSchema = z.enum([

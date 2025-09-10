@@ -9,7 +9,7 @@ import {
     index,
     json,
     check,
-    unique
+    unique, numeric, date
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 import { boxes } from "./core";
@@ -33,6 +33,8 @@ export const billingEvents = pgTable("billing_events", {
     processingStackTrace: text("processing_stack_trace"), // For debugging
     retryCount: integer("retry_count").default(0).notNull(),
     maxRetries: integer("max_retries").default(3).notNull(),
+    exponentialBackoff: boolean("exponential_backoff").default(true),
+    baseRetryDelayMs: integer("base_retry_delay_ms").default(1000),
 
     // Enhanced timing and priority
     priority: integer("priority").default(0).notNull(), // Higher numbers = higher priority
@@ -220,6 +222,10 @@ export const customerProfiles = pgTable("customer_profiles", {
     lastPolarSyncAt: timestamp("last_polar_sync_at", { withTimezone: true }),
     polarSyncError: text("polar_sync_error"),
 
+    polarMeters: json("polar_meters").default(sql`'[]'::jsonb`),
+    lastMeterSyncAt: timestamp("last_meter_sync_at", { withTimezone: true }),
+    externalCustomerId: text("external_customer_id").unique(),
+
     // Timestamps - consistent naming
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
@@ -282,6 +288,8 @@ export const subscriptions = pgTable("subscriptions", {
     discountAmount: integer("discount_amount"), // in cents
     discountPercent: integer("discount_percent"), // in basis points
     discountEndsAt: timestamp("discount_ends_at", { withTimezone: true }),
+    polarDiscountId: text("polar_discount_id"),
+    discountAppliedAt: timestamp("discount_applied_at", { withTimezone: true }),
 
     // Metadata and sync tracking
     metadata: json("metadata"),
@@ -403,6 +411,9 @@ export const overageBilling = pgTable("overage_billing", {
     polarPaymentStatus: text("polar_payment_status"), // paid, pending, failed
     invoicedAt: timestamp("invoiced_at", { withTimezone: true }),
     paidAt: timestamp("paid_at", { withTimezone: true }),
+    polarMeterId: text("polar_meter_id"),
+    usageCalculationMethod: text("usage_calculation_method").default("database_count"),
+    polarUsageData: json("polar_usage_data"),
 
     // Waiver/adjustment tracking
     waivedAmount: integer("waived_amount").default(0).notNull(), // in cents
@@ -470,6 +481,144 @@ export const overageBilling = pgTable("overage_billing", {
     ),
 }));
 
+export const checkoutSessions = pgTable("checkout_sessions", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
+    customerProfileId: uuid("customer_profile_id").references(() => customerProfiles.id, { onDelete: "set null" }),
+
+    polarCheckoutId: text("polar_checkout_id").notNull().unique(),
+    polarProductId: text("polar_product_id").notNull(),
+
+    successUrl: text("success_url").notNull(),
+    cancelUrl: text("cancel_url"),
+    allowDiscountCodes: boolean("allow_discount_codes").default(false),
+
+    discountId: text("discount_id"),
+
+    status: text("status").default("pending").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+
+    resultingOrderId: uuid("resulting_order_id"),
+    resultingSubscriptionId: uuid("resulting_subscription_id"),
+
+    metadata: json("metadata").default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    boxIdIdx: index("checkout_sessions_box_id_idx").on(table.boxId),
+    polarCheckoutIdx: index("checkout_sessions_polar_checkout_idx").on(table.polarCheckoutId),
+    statusIdx: index("checkout_sessions_status_idx").on(table.status),
+}));
+
+export const portalSessions = pgTable("portal_sessions", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
+    customerProfileId: uuid("customer_profile_id").references(() => customerProfiles.id, { onDelete: "cascade" }).notNull(),
+
+    polarSessionId: text("polar_session_id"),
+    portalUrl: text("portal_url").notNull(),
+
+    accessedAt: timestamp("accessed_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+
+    createdByUserId: text("created_by_user_id"),
+    creationReason: text("creation_reason"),
+
+    metadata: json("metadata").default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    boxIdIdx: index("portal_sessions_box_id_idx").on(table.boxId),
+    customerProfileIdx: index("portal_sessions_customer_profile_idx").on(table.customerProfileId),
+    expiresAtIdx: index("portal_sessions_expires_at_idx").on(table.expiresAt),
+}));
+
+export const discountCodes = pgTable("discount_codes", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }),
+
+    polarDiscountId: text("polar_discount_id").notNull().unique(),
+    code: text("code").notNull(),
+    name: text("name").notNull(),
+
+    discountType: text("discount_type").notNull(),
+    discountValue: integer("discount_value").notNull(),
+    currency: text("currency").default("USD"),
+
+    startsAt: timestamp("starts_at", { withTimezone: true }),
+    endsAt: timestamp("ends_at", { withTimezone: true }),
+    maxRedemptions: integer("max_redemptions"),
+    currentRedemptions: integer("current_redemptions").default(0),
+
+    applicableProducts: text("applicable_products").array().default(sql`'{}'`),
+    isPublic: boolean("is_public").default(false),
+
+    isActive: boolean("is_active").default(true),
+
+    metadata: json("metadata").default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    boxIdIdx: index("discount_codes_box_id_idx").on(table.boxId),
+    polarDiscountIdx: index("discount_codes_polar_discount_idx").on(table.polarDiscountId),
+    codeIdx: index("discount_codes_code_idx").on(table.code),
+    activePublicIdx: index("discount_codes_active_public_idx").on(table.isActive, table.isPublic),
+}));
+
+export const usageMeters = pgTable("usage_meters", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }),
+
+    polarMeterId: text("polar_meter_id").notNull().unique(),
+    meterName: text("meter_name").notNull(),
+
+    eventType: text("event_type").notNull(),
+    aggregationFunction: text("aggregation_function").default("count"),
+
+    filterClauses: json("filter_clauses").default(sql`'[]'::jsonb`),
+
+    isActive: boolean("is_active").default(true),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    syncError: text("sync_error"),
+
+    metadata: json("metadata").default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    boxIdIdx: index("usage_meters_box_id_idx").on(table.boxId),
+    polarMeterIdx: index("usage_meters_polar_meter_idx").on(table.polarMeterId),
+    eventTypeIdx: index("usage_meters_event_type_idx").on(table.eventType),
+    activeIdx: index("usage_meters_active_idx").on(table.isActive),
+}));
+
+export const customerMeterReadings = pgTable("customer_meter_readings", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
+    customerProfileId: uuid("customer_profile_id").references(() => customerProfiles.id, { onDelete: "cascade" }).notNull(),
+    usageMeterId: uuid("usage_meter_id").references(() => usageMeters.id, { onDelete: "cascade" }).notNull(),
+
+    polarCustomerMeterId: text("polar_customer_meter_id").notNull(),
+
+    consumedUnits: numeric("consumed_units", { precision: 12, scale: 2 }).default("0").notNull(),
+    creditedUnits: integer("credited_units").default(0).notNull(),
+    balance: numeric("balance", { precision: 12, scale: 2 }).default("0").notNull(),
+
+    readingDate: date("reading_date").notNull(),
+    billingPeriodStart: timestamp("billing_period_start", { withTimezone: true }),
+    billingPeriodEnd: timestamp("billing_period_end", { withTimezone: true }),
+
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }).defaultNow().notNull(),
+    syncError: text("sync_error"),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    boxIdIdx: index("customer_meter_readings_box_id_idx").on(table.boxId),
+    customerProfileIdx: index("customer_meter_readings_customer_profile_idx").on(table.customerProfileId),
+    meterIdx: index("customer_meter_readings_meter_idx").on(table.usageMeterId),
+    readingDateIdx: index("customer_meter_readings_reading_date_idx").on(table.readingDate),
+    uniqueDaily: unique("customer_meter_readings_unique_daily").on(table.customerProfileId, table.usageMeterId, table.readingDate),
+}));
+
 // ENHANCED: Orders/payments tracking with better categorization
 export const orders = pgTable("orders", {
     id: uuid("id").defaultRandom().primaryKey(),
@@ -480,6 +629,9 @@ export const orders = pgTable("orders", {
     // Polar order details
     polarOrderId: text("polar_order_id").notNull().unique(),
     polarProductId: text("polar_product_id").notNull(),
+    checkoutSessionId: uuid("checkout_session_id").references(() => checkoutSessions.id),
+    polarInvoiceId: text("polar_invoice_id"),
+    invoiceGeneratedAt: timestamp("invoice_generated_at", { withTimezone: true }),
 
     // NEW: Order categorization
     orderType: text("order_type").notNull(), // "subscription", "onboarding", "overage", "addon"
@@ -624,6 +776,9 @@ export const usageEvents = pgTable("usage_events", {
     polarEventId: text("polar_event_id"), // If sent to Polar for usage billing
     sentToPolarAt: timestamp("sent_to_polar_at", { withTimezone: true }),
     polarError: text("polar_error"),
+    polarIngested: boolean("polar_ingested").default(false),
+    polarIngestAttempts: integer("polar_ingest_attempts").default(0),
+    polarIngestError: text("polar_ingest_error"),
 
     // NEW: Billing period association for accurate usage calculations
     billingPeriodStart: timestamp("billing_period_start", { withTimezone: true }),
@@ -661,6 +816,8 @@ export const planChangeRequests = pgTable("plan_change_requests", {
     fromPlanId: uuid("from_plan_id").references(() => subscriptionPlans.id).notNull(),
     toPlanId: uuid("to_plan_id").references(() => subscriptionPlans.id).notNull(),
     changeType: text("change_type").notNull(), // "upgrade", "downgrade", "lateral"
+    checkoutSessionId: uuid("checkout_session_id").references(() => checkoutSessions.id),
+    requiresPayment: boolean("requires_payment").default(false),
 
     // Timing
     requestedEffectiveDate: timestamp("requested_effective_date", { withTimezone: true }),
