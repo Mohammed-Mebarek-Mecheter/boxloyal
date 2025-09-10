@@ -24,7 +24,7 @@ import {
     mvWellnessTrends
 } from "@/db/schema/views";
 import {eq, desc, and, gte, count, sql, inArray, avg, sum, lte} from "drizzle-orm";
-import type {RiskIndicators} from "@/lib/services/athlete-service";
+import type {RiskIndicators} from "@/lib/services/athlete/athlete-service";
 
 // Types for better type safety
 export type RiskLevel = "low" | "medium" | "high" | "critical";

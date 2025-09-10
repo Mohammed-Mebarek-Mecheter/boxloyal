@@ -117,18 +117,60 @@ class GumletServiceImpl {
 
     /**
      * Upload video file directly to the pre-signed URL
+     * Compatible with Cloudflare Workers fetch implementation
      */
     async uploadVideo(uploadUrl: string, videoFile: Buffer | Blob | File): Promise<void> {
+        let bodyToSend: BodyInit | null = null;
+
+        if (videoFile instanceof Blob || videoFile instanceof File) {
+            // If it's already a Blob or File, use it directly
+            bodyToSend = videoFile;
+        } else {
+            // --- HANDLING BUFFER ---
+            // Assume it's a Buffer-like object (common in Cloudflare Workers environments)
+            // Extract the underlying ArrayBuffer.
+            if (videoFile instanceof ArrayBuffer) {
+                bodyToSend = videoFile;
+            } else if (typeof videoFile === 'object' && videoFile !== null && 'buffer' in videoFile) {
+                // Handles objects with a .buffer property (like Buffer or Uint8Array)
+                const bufferView = videoFile as { buffer: ArrayBuffer; byteOffset?: number; byteLength?: number };
+                if (bufferView.byteOffset !== undefined && bufferView.byteLength !== undefined) {
+                    // If it's a view like Uint8Array, slice the buffer correctly
+                    bodyToSend = bufferView.buffer.slice(bufferView.byteOffset, bufferView.byteOffset + bufferView.byteLength);
+                } else {
+                    // If it's just an object with .buffer, assume it's the full ArrayBuffer
+                    bodyToSend = bufferView.buffer;
+                }
+            } else {
+                // Fallback: If it's something else buffer-like, try passing it directly
+                bodyToSend = videoFile as unknown as BodyInit;
+                console.warn('uploadVideo: Unexpected buffer type, attempting direct assignment.');
+            }
+        }
+
+        // Ensure bodyToSend is not null
+        if (bodyToSend === null) {
+            throw new Error('uploadVideo: Failed to prepare the video file body for upload.');
+        }
+
         const response = await fetch(uploadUrl, {
             method: 'PUT',
-            body: videoFile,
+            body: bodyToSend, // Use the prepared body
             headers: {
                 'Content-Type': 'application/octet-stream',
             },
         });
 
         if (!response.ok) {
-            throw new Error(`Video upload failed: ${response.status} ${response.statusText}`);
+            // Attempt to read error body, but guard against potential issues
+            let errorDetails = 'Unknown error';
+            try {
+                errorDetails = await response.text();
+            } catch (e) {
+                // If reading the error text fails, just use the status
+                errorDetails = `HTTP ${response.status} ${response.statusText}`;
+            }
+            throw new Error(`Video upload failed: ${response.status} ${response.statusText} - ${errorDetails}`);
         }
     }
 
@@ -400,6 +442,3 @@ class GumletServiceImpl {
 
 // Singleton instance
 export const GumletService = new GumletServiceImpl();
-
-// Types for external use
-export type { GumletAssetResponse, GumletAssetDetails, GumletWebhookPayload, VideoUploadOptions, MultipartUploadSession };

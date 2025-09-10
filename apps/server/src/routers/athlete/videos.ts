@@ -1,7 +1,7 @@
 ﻿// routers/athlete/videos.ts - Complete video management router
 import { router, protectedProcedure } from "@/lib/trpc";
 import { z } from "zod";
-import { AthleteService } from "@/lib/services/athlete-service";
+import { AthleteService } from "@/lib/services/athlete/athlete-service";
 import { GumletService } from "@/lib/services/gumlet-service";
 import {
     requireBoxMembership,
@@ -15,8 +15,6 @@ import { TRPCError } from "@trpc/server";
 const videoConsentSchema = z.enum(["coaching", "box_visibility", "public"]);
 
 const videoQualitySchema = z.enum(["standard", "hd", "premium"]);
-
-const analysisDepthSchema = z.enum(["basic", "detailed", "comprehensive"]);
 
 export const athleteVideosRouter = router({
     // Initialize PR video upload
@@ -114,22 +112,6 @@ export const athleteVideosRouter = router({
         }))
         .query(async ({ ctx, input }) => {
             return AthleteService.getVideoAnalytics(input.gumletAssetId, input.timeframe);
-        }),
-
-    // Compare PR videos for form analysis
-    comparePRVideos: protectedProcedure
-        .input(z.object({
-            boxId: z.uuid(),
-            currentPRId: z.uuid(),
-            previousPRId: z.uuid().optional(),
-        }))
-        .query(async ({ ctx, input }) => {
-            const membership = await requireBoxMembership(ctx, input.boxId);
-
-            return AthleteService.comparePRVideos(
-                input.currentPRId,
-                input.previousPRId
-            );
         }),
 
     // Update video consent
@@ -251,25 +233,6 @@ export const athleteVideosRouter = router({
                     duration: input.duration,
                     includeComparison: input.includeComparison,
                     musicTrack: input.musicTrack,
-                }
-            );
-        }),
-
-    // Generate technique insights
-    generateTechniqueInsights: protectedProcedure
-        .input(z.object({
-            prId: z.uuid(),
-            includeComparison: z.boolean().default(false),
-            previousPRId: z.uuid().optional(),
-            analysisDepth: analysisDepthSchema.default("basic"),
-        }))
-        .query(async ({ ctx, input }) => {
-            return AthleteService.generateTechniqueInsights(
-                input.prId,
-                {
-                    includeComparison: input.includeComparison,
-                    previousPRId: input.previousPRId,
-                    analysisDepth: input.analysisDepth,
                 }
             );
         }),

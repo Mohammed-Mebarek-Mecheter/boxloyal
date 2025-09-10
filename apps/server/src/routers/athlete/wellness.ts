@@ -1,7 +1,7 @@
 // routers/athlete/wellness.ts - Enhanced version with normalized tracking
 import { router, protectedProcedure } from "@/lib/trpc";
 import { z } from "zod";
-import { AthleteService } from "@/lib/services/athlete-service";
+import { AthleteService } from "@/lib/services/athlete/athlete-service";
 import {
     requireBoxMembership,
     checkSubscriptionLimits,
