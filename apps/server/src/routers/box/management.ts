@@ -5,11 +5,11 @@ import {
     requireBoxOwner,
     checkSubscriptionLimits, getUserBoxMemberships, requireCoachOrAbove,
 } from "@/lib/permissions";
-import { BoxService } from "@/lib/services/box-service";
 import { TRPCError } from "@trpc/server";
 import {db} from "@/db";
 import {boxes, boxMemberships} from "@/db/schema";
 import {eq} from "drizzle-orm";
+import {BoxCoreService} from "@/lib/services/box";
 
 export const boxManagementRouter = router({
     // Create a new box (for new owners during signup)
@@ -81,6 +81,7 @@ export const boxManagementRouter = router({
                     boxId: box.id,
                     userId: ctx.session.user.id,
                     role: "owner",
+                    displayName: ctx.session.user.name || ctx.session.user.email || "Owner",
                     isActive: true,
                 });
 
@@ -110,7 +111,7 @@ export const boxManagementRouter = router({
 
             const { boxId, ...updates } = input;
 
-            return BoxService.updateBox(boxId, updates);
+            return BoxCoreService.updateBox(boxId, updates);
         }),
 
     // Get box dashboard data (owner and coaches)
@@ -121,6 +122,6 @@ export const boxManagementRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            return BoxService.getDashboard(input.boxId);
+            return BoxCoreService.getDashboard(input.boxId);
         }),
 });

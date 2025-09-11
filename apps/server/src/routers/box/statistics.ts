@@ -2,7 +2,7 @@
 import { protectedProcedure, router } from "@/lib/trpc";
 import { z } from "zod";
 import { requireCoachOrAbove } from "@/lib/permissions";
-import { BoxService } from "@/lib/services/box-service";
+import {BoxCoreService} from "@/lib/services/box";
 
 export const boxStatisticsRouter = router({
     // Get box statistics (owner and coaches)
@@ -14,6 +14,6 @@ export const boxStatisticsRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            return BoxService.getBoxStats(input.boxId, input.period);
+            return BoxCoreService.getBoxStats(input.boxId, input.period);
         }),
 });

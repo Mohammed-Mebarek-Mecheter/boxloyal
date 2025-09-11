@@ -6,11 +6,16 @@ import {
     requireCoachOrAbove,
     checkSubscriptionLimits,
 } from "@/lib/permissions";
-import { BoxService } from "@/lib/services/box-service";
 import { TRPCError } from "@trpc/server";
 import { boxMemberships } from "@/db/schema";
 import { db } from "@/db";
 import { eq } from "drizzle-orm";
+import {
+    BoxApprovalService,
+    BoxInviteService,
+    BoxMemberService,
+    BoxQrCodeService
+} from "@/lib/services/box";
 
 export const boxMembersRouter = router({
     // Get box members (coaches and above can view all, athletes see limited info)
@@ -25,7 +30,7 @@ export const boxMembersRouter = router({
             const membership = await requireBoxMembership(ctx, input.boxId);
             const isCoachOrAbove = ["owner", "head_coach", "coach"].includes(membership.role);
 
-            return BoxService.getMembers(input.boxId, {
+            return BoxMemberService.getMembers(input.boxId, {
                 role: input.role,
                 isActive: input.isActive,
                 includeStats: input.includeStats,
@@ -45,7 +50,7 @@ export const boxMembersRouter = router({
             await requireCoachOrAbove(ctx, input.boxId);
             await checkSubscriptionLimits(input.boxId);
 
-            return BoxService.createInvitation({
+            return BoxInviteService.createInvitation({
                 boxId: input.boxId,
                 email: input.email,
                 role: input.role,
@@ -62,7 +67,7 @@ export const boxMembersRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            return BoxService.getPendingInvites(input.boxId);
+            return BoxInviteService.getPendingInvites(input.boxId);
         }),
 
     // Cancel invite (coaches and above)
@@ -74,7 +79,7 @@ export const boxMembersRouter = router({
         .mutation(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            return BoxService.cancelInvite(input.boxId, input.inviteId);
+            return BoxInviteService.cancelInvite(input.boxId, input.inviteId);
         }),
 
     // Remove/deactivate member (owner only, or head_coach for athletes/coaches)
@@ -123,7 +128,7 @@ export const boxMembersRouter = router({
                 });
             }
 
-            return BoxService.removeMember(input.membershipId, input.reason);
+            return BoxMemberService.removeMember(input.membershipId, input.reason);
         }),
 
     // Get approval queue (owner and head coaches)
@@ -135,7 +140,7 @@ export const boxMembersRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            return BoxService.getApprovalQueue(input.boxId, input.status);
+            return BoxApprovalService.getApprovalQueue(input.boxId, input.status);
         }),
 
     // Approve/reject member request (owner and head coaches)
@@ -150,7 +155,7 @@ export const boxMembersRouter = router({
             await requireCoachOrAbove(ctx, input.boxId);
             await checkSubscriptionLimits(input.boxId);
 
-            return BoxService.processApproval({
+            return BoxApprovalService.processApproval({
                 boxId: input.boxId,
                 approvalId: input.approvalId,
                 decision: input.decision,
@@ -169,7 +174,7 @@ export const boxMembersRouter = router({
             await requireCoachOrAbove(ctx, input.boxId);
             await checkSubscriptionLimits(input.boxId);
 
-            return BoxService.createQrCode({
+            return BoxQrCodeService.createQrCode({
                 boxId: input.boxId,
                 name: input.name,
                 createdByUserId: ctx.session.user.id,
@@ -185,7 +190,7 @@ export const boxMembersRouter = router({
         .query(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            return BoxService.getQrCodes(input.boxId, input.activeOnly);
+            return BoxQrCodeService.getQrCodes(input.boxId, input.activeOnly);
         }),
 
     // Deactivate QR code (coaches and above)
@@ -197,6 +202,6 @@ export const boxMembersRouter = router({
         .mutation(async ({ ctx, input }) => {
             await requireCoachOrAbove(ctx, input.boxId);
 
-            return BoxService.deactivateQrCode(input.boxId, input.qrCodeId);
+            return BoxQrCodeService.deactivateQrCode(input.boxId, input.qrCodeId);
         }),
 });
