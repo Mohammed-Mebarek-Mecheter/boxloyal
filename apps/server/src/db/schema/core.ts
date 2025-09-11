@@ -5,7 +5,6 @@ import {
     timestamp,
     boolean,
     integer,
-    pgEnum,
     uuid,
     index,
     unique,
@@ -14,51 +13,15 @@ import {
 } from "drizzle-orm/pg-core";
 import {relations, sql} from "drizzle-orm";
 import { user } from "@/db/schema/auth";
-
-// Centralized enums for consistency across all tables
-export const userRoleEnum = pgEnum("user_role", [
-    "owner",
-    "head_coach",
-    "coach",
-    "athlete"
-]);
-
-export const subscriptionStatusEnum = pgEnum("subscription_status", [
-    "trial",
-    "active",
-    "past_due",
-    "canceled",
-    "incomplete",
-    "paused", // Added for temporary suspensions
-    "churned"  // Added for definitively lost customers
-]);
-
-export const subscriptionTierEnum = pgEnum("subscription_tier", [
-    "seed",
-    "grow",
-    "scale"
-]);
-
-export const boxStatusEnum = pgEnum("box_status", [
-    "active",
-    "suspended",
-    "trial_expired",
-    "over_limit", // Added for soft-block scenarios
-    "payment_failed" // Added for billing issues
-]);
-
-export const inviteStatusEnum = pgEnum("invite_status", [
-    "pending",
-    "accepted",
-    "expired",
-    "canceled"
-]);
-
-export const approvalStatusEnum = pgEnum("approval_status", [
-    "pending",
-    "approved",
-    "rejected"
-]);
+import {demoAchievements, demoDataSnapshots, demoGuidedFlows, demoPersonas, demoSessions} from "@/db/schema/demo";
+import {
+    approvalStatusEnum,
+    boxStatusEnum,
+    inviteStatusEnum,
+    subscriptionStatusEnum,
+    subscriptionTierEnum,
+    userRoleEnum
+} from "@/db/schema/enums";
 
 // Core tenant/organization table - Enhanced with payment workflow support
 export const boxes = pgTable("boxes", {
@@ -178,50 +141,6 @@ export const boxes = pgTable("boxes", {
         "boxes_trial_days_positive",
         sql`${table.trialDaysRemaining} >= 0`
     ),
-}));
-
-// Demo athlete personas for storytelling - Enhanced
-export const demoPersonas = pgTable("demo_personas", {
-    id: uuid("id").defaultRandom().primaryKey(),
-    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
-    name: text("name").notNull(),
-    role: userRoleEnum("role").notNull(),
-    backstory: text("backstory").notNull(),
-    metrics: json("metrics").notNull(), // Pre-populated performance data
-    isActive: boolean("is_active").default(true).notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-}, (table) => ({
-    boxIdIdx: index("demo_personas_box_id_idx").on(table.boxId),
-    boxRoleIdx: index("demo_personas_box_role_idx").on(table.boxId, table.role),
-}));
-
-// Demo data snapshots - Enhanced
-export const demoDataSnapshots = pgTable("demo_data_snapshots", {
-    id: uuid("id").defaultRandom().primaryKey(),
-    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
-    snapshotData: json("snapshot_data").notNull(), // Complete box state for demo reset
-    version: text("version").default("1.0").notNull(), // Track snapshot versions
-    isActive: boolean("is_active").default(true).notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-}, (table) => ({
-    boxIdIdx: index("demo_data_snapshots_box_id_idx").on(table.boxId),
-}));
-
-// Demo guided flows - Enhanced
-export const demoGuidedFlows = pgTable("demo_guided_flows", {
-    id: uuid("id").defaultRandom().primaryKey(),
-    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
-    role: userRoleEnum("role").notNull(), // Which role's flow is active
-    currentStep: integer("current_step").default(0).notNull(),
-    completedSteps: json("completed_steps").default([]).notNull(),
-    totalSteps: integer("total_steps").default(10).notNull(), // Track progress
-    isCompleted: boolean("is_completed").default(false).notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-}, (table) => ({
-    // OPTIMIZED: Essential indexes only
-    boxRoleIdx: index("demo_guided_flows_box_role_idx").on(table.boxId, table.role),
 }));
 
 // Junction table for box membership with roles - ENHANCED with consistent membershipId usage
@@ -393,6 +312,8 @@ export const boxesRelations = relations(boxes, ({ many }) => ({
     demoPersonas: many(demoPersonas, { relationName: "box_demo_personas" }),
     demoDataSnapshots: many(demoDataSnapshots, { relationName: "box_demo_snapshots" }),
     demoGuidedFlows: many(demoGuidedFlows, { relationName: "box_demo_flows" }),
+    demoSessions: many(demoSessions, { relationName: "box_demo_sessions" }),
+    demoAchievements: many(demoAchievements, { relationName: "box_demo_achievements" }),
 }));
 
 export const boxMembershipsRelations = relations(boxMemberships, ({ one }) => ({
@@ -457,29 +378,5 @@ export const userProfilesRelations = relations(userProfiles, ({ one }) => ({
         fields: [userProfiles.userId],
         references: [user.id],
         relationName: "user_profile"
-    }),
-}));
-
-export const demoPersonasRelations = relations(demoPersonas, ({ one }) => ({
-    box: one(boxes, {
-        fields: [demoPersonas.boxId],
-        references: [boxes.id],
-        relationName: "box_demo_personas"
-    }),
-}));
-
-export const demoDataSnapshotsRelations = relations(demoDataSnapshots, ({ one }) => ({
-    box: one(boxes, {
-        fields: [demoDataSnapshots.boxId],
-        references: [boxes.id],
-        relationName: "box_demo_snapshots"
-    }),
-}));
-
-export const demoGuidedFlowsRelations = relations(demoGuidedFlows, ({ one }) => ({
-    box: one(boxes, {
-        fields: [demoGuidedFlows.boxId],
-        references: [boxes.id],
-        relationName: "box_demo_flows"
     }),
 }));

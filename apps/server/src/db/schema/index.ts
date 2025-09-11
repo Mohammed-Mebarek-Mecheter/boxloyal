@@ -1,10 +1,11 @@
-﻿// db/schema/index.ts - Enhanced version with all schema exports and consistent naming
+﻿// db/schema/index.ts
 export * from "./auth";
 export * from "./core";
 export * from "./athletes";
 export * from "./analytics";
 export * from "./billing";
 export * from "./videos";
+export * from "./demo";
 
 // Re-export all tables for easy importing
 import * as auth from "./auth";
@@ -13,6 +14,7 @@ import * as athletes from "./athletes";
 import * as analytics from "./analytics";
 import * as billing from "./billing";
 import * as videos from "./videos";
+import * as demo from "./demo";
 
 export const schema = {
     ...auth,
@@ -20,9 +22,11 @@ export const schema = {
     ...athletes,
     ...analytics,
     ...billing,
-    ...videos
+    ...videos,
+    ...demo
 };
 
+/*
 // Type helpers for common queries - Enhanced with new tables
 import { createSelectSchema, createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -54,12 +58,18 @@ export const selectApprovalQueueSchema = createSelectSchema(core.approvalQueue);
 export const insertApprovalQueueSchema = createInsertSchema(core.approvalQueue);
 
 // Demo schemas - Enhanced
-export const selectDemoPersonaSchema = createSelectSchema(core.demoPersonas);
-export const insertDemoPersonaSchema = createInsertSchema(core.demoPersonas);
-export const selectDemoDataSnapshotSchema = createSelectSchema(core.demoDataSnapshots);
-export const insertDemoDataSnapshotSchema = createInsertSchema(core.demoDataSnapshots);
-export const selectDemoGuidedFlowSchema = createSelectSchema(core.demoGuidedFlows);
-export const insertDemoGuidedFlowSchema = createInsertSchema(core.demoGuidedFlows);
+export const selectDemoPersonaSchema = createSelectSchema(demo.demoPersonas);
+export const insertDemoPersonaSchema = createInsertSchema(demo.demoPersonas);
+export const selectDemoDataSnapshotSchema = createSelectSchema(demo.demoDataSnapshots);
+export const insertDemoDataSnapshotSchema = createInsertSchema(demo.demoDataSnapshots);
+export const selectDemoGuidedFlowSchema = createSelectSchema(demo.demoGuidedFlows);
+export const insertDemoGuidedFlowSchema = createInsertSchema(demo.demoGuidedFlows);
+export const selectDemoScenarioSchema = createSelectSchema(demo.demoScenarios);
+export const insertDemoScenarioSchema = createInsertSchema(demo.demoScenarios);
+export const selectDemoSessionSchema = createSelectSchema(demo.demoSessions);
+export const insertDemoSessionSchema = createInsertSchema(demo.demoSessions);
+export const selectDemoAchievementSchema = createSelectSchema(demo.demoAchievements);
+export const insertDemoAchievementSchema = createInsertSchema(demo.demoAchievements);
 
 // Movement and benchmark schemas
 export const selectMovementSchema = createSelectSchema(athletes.movements);
@@ -123,6 +133,16 @@ export const selectRiskFactorHistorySchema = createSelectSchema(analytics.riskFa
 export const insertRiskFactorHistorySchema = createInsertSchema(analytics.riskFactorHistory);
 export const selectAlertEscalationSchema = createSelectSchema(analytics.alertEscalations);
 export const insertAlertEscalationSchema = createInsertSchema(analytics.alertEscalations);
+export const selectInterventionOutcomeSchema = createSelectSchema(analytics.interventionOutcomes);
+export const insertInterventionOutcomeSchema = createInsertSchema(analytics.interventionOutcomes);
+export const selectWellnessPerformanceCorrelationSchema = createSelectSchema(analytics.wellnessPerformanceCorrelations);
+export const insertWellnessPerformanceCorrelationSchema = createInsertSchema(analytics.wellnessPerformanceCorrelations);
+export const selectCoachPerformanceMetricsSchema = createSelectSchema(analytics.coachPerformanceMetrics);
+export const insertCoachPerformanceMetricsSchema = createInsertSchema(analytics.coachPerformanceMetrics);
+export const selectRetentionEventSchema = createSelectSchema(analytics.retentionEvents);
+export const insertRetentionEventSchema = createInsertSchema(analytics.retentionEvents);
+export const selectBoxSubscriptionHealthSchema = createSelectSchema(analytics.boxSubscriptionHealth);
+export const insertBoxSubscriptionHealthSchema = createInsertSchema(analytics.boxSubscriptionHealth);
 
 // Billing schemas - Enhanced
 export const selectBillingEventSchema = createSelectSchema(billing.billingEvents);
@@ -133,12 +153,48 @@ export const selectCustomerProfileSchema = createSelectSchema(billing.customerPr
 export const insertCustomerProfileSchema = createInsertSchema(billing.customerProfiles);
 export const selectSubscriptionSchema = createSelectSchema(billing.subscriptions);
 export const insertSubscriptionSchema = createInsertSchema(billing.subscriptions);
+export const selectSubscriptionChangeSchema = createSelectSchema(billing.subscriptionChanges);
+export const insertSubscriptionChangeSchema = createInsertSchema(billing.subscriptionChanges);
+export const selectOverageBillingSchema = createSelectSchema(billing.overageBilling);
+export const insertOverageBillingSchema = createInsertSchema(billing.overageBilling);
+export const selectCheckoutSessionSchema = createSelectSchema(billing.checkoutSessions);
+export const insertCheckoutSessionSchema = createInsertSchema(billing.checkoutSessions);
+export const selectPortalSessionSchema = createSelectSchema(billing.portalSessions);
+export const insertPortalSessionSchema = createInsertSchema(billing.portalSessions);
+export const selectDiscountCodeSchema = createSelectSchema(billing.discountCodes);
+export const insertDiscountCodeSchema = createInsertSchema(billing.discountCodes);
+export const selectUsageMeterSchema = createSelectSchema(billing.usageMeters);
+export const insertUsageMeterSchema = createInsertSchema(billing.usageMeters);
+export const selectCustomerMeterReadingSchema = createSelectSchema(billing.customerMeterReadings);
+export const insertCustomerMeterReadingSchema = createInsertSchema(billing.customerMeterReadings);
 export const selectOrderSchema = createSelectSchema(billing.orders);
 export const insertOrderSchema = createInsertSchema(billing.orders);
 export const selectGracePeriodSchema = createSelectSchema(billing.gracePeriods);
 export const insertGracePeriodSchema = createInsertSchema(billing.gracePeriods);
 export const selectUsageEventSchema = createSelectSchema(billing.usageEvents);
 export const insertUsageEventSchema = createInsertSchema(billing.usageEvents);
+export const selectPlanChangeRequestSchema = createSelectSchema(billing.planChangeRequests);
+export const insertPlanChangeRequestSchema = createInsertSchema(billing.planChangeRequests);
+export const selectPaymentMethodSchema = createSelectSchema(billing.paymentMethods);
+export const insertPaymentMethodSchema = createInsertSchema(billing.paymentMethods);
+
+// Video strategy schemas
+export const selectPrCoachFeedbackSchema = createSelectSchema(videos.prCoachFeedback);
+export const insertPrCoachFeedbackSchema = createInsertSchema(videos.prCoachFeedback);
+export const selectVideoSocialShareSchema = createSelectSchema(videos.videoSocialShares);
+export const insertVideoSocialShareSchema = createInsertSchema(videos.videoSocialShares);
+export const selectVideoCelebrationEventSchema = createSelectSchema(videos.videoCelebrationEvents);
+export const insertVideoCelebrationEventSchema = createInsertSchema(videos.videoCelebrationEvents);
+export const selectVideoReviewAssignmentSchema = createSelectSchema(videos.videoReviewAssignments);
+export const insertVideoReviewAssignmentSchema = createInsertSchema(videos.videoReviewAssignments);
+export const selectVideoEngagementAnalyticsSchema = createSelectSchema(videos.videoEngagementAnalytics);
+export const insertVideoEngagementAnalyticsSchema = createInsertSchema(videos.videoEngagementAnalytics);
+export const selectMemberVideoPreferencesSchema = createSelectSchema(videos.memberVideoPreferences);
+export const insertMemberVideoPreferencesSchema = createInsertSchema(videos.memberVideoPreferences);
+export const selectVideoMilestoneSchema = createSelectSchema(videos.videoMilestones);
+export const insertVideoMilestoneSchema = createInsertSchema(videos.videoMilestones);
+export const selectBoxVideoSettingsSchema = createSelectSchema(videos.boxVideoSettings);
+export const insertBoxVideoSettingsSchema = createInsertSchema(videos.boxVideoSettings);
 
 // Common filter schemas - Enhanced
 export const paginationSchema = z.object({
@@ -214,12 +270,18 @@ export type ApprovalQueue = typeof core.approvalQueue.$inferSelect;
 export type NewApprovalQueue = typeof core.approvalQueue.$inferInsert;
 
 // Demo types
-export type DemoPersona = typeof core.demoPersonas.$inferSelect;
-export type NewDemoPersona = typeof core.demoPersonas.$inferInsert;
-export type DemoDataSnapshot = typeof core.demoDataSnapshots.$inferSelect;
-export type NewDemoDataSnapshot = typeof core.demoDataSnapshots.$inferInsert;
-export type DemoGuidedFlow = typeof core.demoGuidedFlows.$inferSelect;
-export type NewDemoGuidedFlow = typeof core.demoGuidedFlows.$inferInsert;
+export type DemoPersona = typeof demo.demoPersonas.$inferSelect;
+export type NewDemoPersona = typeof demo.demoPersonas.$inferInsert;
+export type DemoDataSnapshot = typeof demo.demoDataSnapshots.$inferSelect;
+export type NewDemoDataSnapshot = typeof demo.demoDataSnapshots.$inferInsert;
+export type DemoGuidedFlow = typeof demo.demoGuidedFlows.$inferSelect;
+export type NewDemoGuidedFlow = typeof demo.demoGuidedFlows.$inferInsert;
+export type DemoScenario = typeof demo.demoScenarios.$inferSelect;
+export type NewDemoScenario = typeof demo.demoScenarios.$inferInsert;
+export type DemoSession = typeof demo.demoSessions.$inferSelect;
+export type NewDemoSession = typeof demo.demoSessions.$inferInsert;
+export type DemoAchievement = typeof demo.demoAchievements.$inferSelect;
+export type NewDemoAchievement = typeof demo.demoAchievements.$inferInsert;
 
 // Movement and benchmark types
 export type Movement = typeof athletes.movements.$inferSelect;
@@ -283,6 +345,16 @@ export type RiskFactorHistory = typeof analytics.riskFactorHistory.$inferSelect;
 export type NewRiskFactorHistory = typeof analytics.riskFactorHistory.$inferInsert;
 export type AlertEscalation = typeof analytics.alertEscalations.$inferSelect;
 export type NewAlertEscalation = typeof analytics.alertEscalations.$inferInsert;
+export type InterventionOutcome = typeof analytics.interventionOutcomes.$inferSelect;
+export type NewInterventionOutcome = typeof analytics.interventionOutcomes.$inferInsert;
+export type WellnessPerformanceCorrelation = typeof analytics.wellnessPerformanceCorrelations.$inferSelect;
+export type NewWellnessPerformanceCorrelation = typeof analytics.wellnessPerformanceCorrelations.$inferInsert;
+export type CoachPerformanceMetrics = typeof analytics.coachPerformanceMetrics.$inferSelect;
+export type NewCoachPerformanceMetrics = typeof analytics.coachPerformanceMetrics.$inferInsert;
+export type RetentionEvent = typeof analytics.retentionEvents.$inferSelect;
+export type NewRetentionEvent = typeof analytics.retentionEvents.$inferInsert;
+export type BoxSubscriptionHealth = typeof analytics.boxSubscriptionHealth.$inferSelect;
+export type NewBoxSubscriptionHealth = typeof analytics.boxSubscriptionHealth.$inferInsert;
 
 // Billing types - Enhanced
 export type BillingEvent = typeof billing.billingEvents.$inferSelect;
@@ -293,12 +365,48 @@ export type CustomerProfile = typeof billing.customerProfiles.$inferSelect;
 export type NewCustomerProfile = typeof billing.customerProfiles.$inferInsert;
 export type Subscription = typeof billing.subscriptions.$inferSelect;
 export type NewSubscription = typeof billing.subscriptions.$inferInsert;
+export type SubscriptionChange = typeof billing.subscriptionChanges.$inferSelect;
+export type NewSubscriptionChange = typeof billing.subscriptionChanges.$inferInsert;
+export type OverageBilling = typeof billing.overageBilling.$inferSelect;
+export type NewOverageBilling = typeof billing.overageBilling.$inferInsert;
+export type CheckoutSession = typeof billing.checkoutSessions.$inferSelect;
+export type NewCheckoutSession = typeof billing.checkoutSessions.$inferInsert;
+export type PortalSession = typeof billing.portalSessions.$inferSelect;
+export type NewPortalSession = typeof billing.portalSessions.$inferInsert;
+export type DiscountCode = typeof billing.discountCodes.$inferSelect;
+export type NewDiscountCode = typeof billing.discountCodes.$inferInsert;
+export type UsageMeter = typeof billing.usageMeters.$inferSelect;
+export type NewUsageMeter = typeof billing.usageMeters.$inferInsert;
+export type CustomerMeterReading = typeof billing.customerMeterReadings.$inferSelect;
+export type NewCustomerMeterReading = typeof billing.customerMeterReadings.$inferInsert;
 export type Order = typeof billing.orders.$inferSelect;
 export type NewOrder = typeof billing.orders.$inferInsert;
 export type GracePeriod = typeof billing.gracePeriods.$inferSelect;
 export type NewGracePeriod = typeof billing.gracePeriods.$inferInsert;
 export type UsageEvent = typeof billing.usageEvents.$inferSelect;
 export type NewUsageEvent = typeof billing.usageEvents.$inferInsert;
+export type PlanChangeRequest = typeof billing.planChangeRequests.$inferSelect;
+export type NewPlanChangeRequest = typeof billing.planChangeRequests.$inferInsert;
+export type PaymentMethod = typeof billing.paymentMethods.$inferSelect;
+export type NewPaymentMethod = typeof billing.paymentMethods.$inferInsert;
+
+// Video strategy types
+export type PrCoachFeedback = typeof videos.prCoachFeedback.$inferSelect;
+export type NewPrCoachFeedback = typeof videos.prCoachFeedback.$inferInsert;
+export type VideoSocialShare = typeof videos.videoSocialShares.$inferSelect;
+export type NewVideoSocialShare = typeof videos.videoSocialShares.$inferInsert;
+export type VideoCelebrationEvent = typeof videos.videoCelebrationEvents.$inferSelect;
+export type NewVideoCelebrationEvent = typeof videos.videoCelebrationEvents.$inferInsert;
+export type VideoReviewAssignment = typeof videos.videoReviewAssignments.$inferSelect;
+export type NewVideoReviewAssignment = typeof videos.videoReviewAssignments.$inferInsert;
+export type VideoEngagementAnalytics = typeof videos.videoEngagementAnalytics.$inferSelect;
+export type NewVideoEngagementAnalytics = typeof videos.videoEngagementAnalytics.$inferInsert;
+export type MemberVideoPreferences = typeof videos.memberVideoPreferences.$inferSelect;
+export type NewMemberVideoPreferences = typeof videos.memberVideoPreferences.$inferInsert;
+export type VideoMilestone = typeof videos.videoMilestones.$inferSelect;
+export type NewVideoMilestone = typeof videos.videoMilestones.$inferInsert;
+export type BoxVideoSettings = typeof videos.boxVideoSettings.$inferSelect;
+export type NewBoxVideoSettings = typeof videos.boxVideoSettings.$inferInsert;
 
 // Enum types for type safety
 export type UserRole = "owner" | "head_coach" | "coach" | "athlete";
@@ -315,11 +423,14 @@ export type BadgeType = "checkin_streak" | "pr_achievement" | "benchmark_complet
 export type BodyPart = "neck" | "shoulders" | "chest" | "upper_back" | "lower_back" | "abs" |
     "biceps" | "triceps" | "forearms" | "glutes" | "quads" | "hamstrings" |
     "calves" | "ankles" | "knees" | "hips" | "wrists";
-export type SubscriptionStatus = "trial" | "active" | "past_due" | "canceled" | "incomplete";
+export type SubscriptionStatus = "trial" | "active" | "past_due" | "canceled" | "incomplete" | "paused" | "churned";
 export type SubscriptionTier = "seed" | "grow" | "scale";
-export type BoxStatus = "active" | "suspended" | "trial_expired";
+export type BoxStatus = "active" | "suspended" | "trial_expired" | "over_limit" | "payment_failed";
 export type InviteStatus = "pending" | "accepted" | "expired" | "canceled";
 export type ApprovalStatus = "pending" | "approved" | "rejected";
+export type FeedbackType = "technique" | "encouragement" | "correction" | "celebration";
+export type SocialPlatform = "box_feed" | "instagram" | "facebook" | "public";
+export type ShareType = "pr_celebration" | "progress_update" | "technique_showcase" | "milestone_achievement";
 
 // Utility types for common operations
 export type PaginatedResponse<T> = {
@@ -404,6 +515,11 @@ export type BoxWithSubscriptionInfo = Box & {
 export type PrWithVideoInfo = AthletePr & {
     videoConsents: VideoConsent[];
     videoProcessingEvents: VideoProcessingEvent[];
+    coachFeedback?: PrCoachFeedback[];
+    socialShares?: VideoSocialShare[];
+    celebrationEvents?: VideoCelebrationEvent[];
+    reviewAssignments?: VideoReviewAssignment[];
+    engagementAnalytics?: VideoEngagementAnalytics;
 };
 
 export type VideoProcessingSummary = {
@@ -450,3 +566,4 @@ export type AthleteHealthSummary = {
         description: string;
     }[];
 };
+*/

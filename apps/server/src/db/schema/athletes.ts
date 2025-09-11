@@ -1,4 +1,4 @@
-﻿// db/schema/athletes.ts - Optimized version with improved indexing
+﻿// db/schema/athletes.ts
 import {
     pgTable,
     text,
@@ -6,7 +6,6 @@ import {
     boolean,
     integer,
     decimal,
-    pgEnum,
     uuid,
     index,
     json,
@@ -15,67 +14,14 @@ import {
     unique
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
-import { boxes, boxMemberships, userRoleEnum } from "./core";
-
-// Enhanced Movement Categories
-export const movementCategoryEnum = pgEnum("movement_category", [
-    "squat",
-    "deadlift",
-    "press",
-    "olympic",
-    "gymnastics",
-    "cardio",
-    "other"
-]);
-
-// Enhanced Benchmark Categories
-export const benchmarkCategoryEnum = pgEnum("benchmark_category", [
-    "girls", // Fran, Grace, Helen, etc.
-    "hero", // Murph, DT, JT, etc.
-    "open", // CrossFit Open workouts
-    "games", // CrossFit Games workouts
-    "custom" // Box-specific benchmarks
-]);
-
-// Badge types for gamification
-export const badgeTypeEnum = pgEnum("badge_type", [
-    "checkin_streak",
-    "pr_achievement",
-    "benchmark_completion",
-    "attendance",
-    "consistency",
-    "community"
-]);
-
-// Video processing status enum for consistency
-export const videoProcessingStatusEnum = pgEnum("video_processing_status", [
-    "pending",
-    "upload_pending",
-    "processing",
-    "ready",
-    "error"
-]);
-
-// Body parts enum for normalized soreness/pain tracking
-export const bodyPartEnum = pgEnum("body_part", [
-    "neck",
-    "shoulders",
-    "chest",
-    "upper_back",
-    "lower_back",
-    "abs",
-    "biceps",
-    "triceps",
-    "forearms",
-    "glutes",
-    "quads",
-    "hamstrings",
-    "calves",
-    "ankles",
-    "knees",
-    "hips",
-    "wrists"
-]);
+import { boxes, boxMemberships } from "./core";
+import {
+    badgeTypeEnum,
+    benchmarkCategoryEnum,
+    bodyPartEnum,
+    movementCategoryEnum,
+    videoProcessingStatusEnum
+} from "@/db/schema/enums";
 
 // Movement types for PR tracking - enhanced with skill/lift flags
 export const movements = pgTable("movements", {

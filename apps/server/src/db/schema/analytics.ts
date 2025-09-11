@@ -1,4 +1,4 @@
-﻿// db/schema/analytics.ts - Optimized version with improved indexing
+﻿// db/schema/analytics.ts
 import {
     pgTable,
     text,
@@ -6,7 +6,6 @@ import {
     boolean,
     integer,
     decimal,
-    pgEnum,
     uuid,
     index,
     json,
@@ -14,35 +13,10 @@ import {
     unique
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
-import { boxes, boxMemberships, userRoleEnum } from "./core";
+import { boxes, boxMemberships } from "./core";
+import {alertStatusEnum, alertTypeEnum, riskLevelEnum, userRoleEnum} from "@/db/schema/enums";
 
-// Risk levels for athlete retention
-export const riskLevelEnum = pgEnum("risk_level", [
-    "low",
-    "medium",
-    "high",
-    "critical"
-]);
-
-// Alert types
-export const alertTypeEnum = pgEnum("alert_type", [
-    "declining_performance",
-    "poor_attendance",
-    "negative_wellness",
-    "no_checkin",
-    "injury_risk",
-    "engagement_drop",
-    "churn_risk"
-]);
-
-export const alertStatusEnum = pgEnum("alert_status", [
-    "active",
-    "acknowledged",
-    "resolved",
-    "dismissed"
-]);
-
-// CRITICAL MVP TABLE: Athlete retention risk scores
+// CORE ANALYTICS TABLE: Athlete retention risk scores
 export const athleteRiskScores = pgTable("athlete_risk_scores", {
     id: uuid("id").defaultRandom().primaryKey(),
     boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
@@ -133,7 +107,7 @@ export const athleteRiskScores = pgTable("athlete_risk_scores", {
     ),
 }));
 
-// CRITICAL MVP TABLE: Coach alerts for athlete intervention
+// CORE WORKFLOW TABLE: Coach alerts for athlete intervention
 export const athleteAlerts = pgTable("athlete_alerts", {
     id: uuid("id").defaultRandom().primaryKey(),
     boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
@@ -190,7 +164,7 @@ export const athleteAlerts = pgTable("athlete_alerts", {
     ),
 }));
 
-// CRITICAL MVP TABLE: Coach interventions and actions taken
+// CORE WORKFLOW TABLE: Coach interventions and actions taken
 export const athleteInterventions = pgTable("athlete_interventions", {
     id: uuid("id").defaultRandom().primaryKey(),
     boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
@@ -238,7 +212,7 @@ export const athleteInterventions = pgTable("athlete_interventions", {
         .where(sql`follow_up_required = true AND follow_up_completed = false`),
 }));
 
-// CRITICAL MVP TABLE: Athlete progress milestones and celebrations
+// CORE ENGAGEMENT TABLE: Athlete progress milestones and celebrations
 export const athleteMilestones = pgTable("athlete_milestones", {
     id: uuid("id").defaultRandom().primaryKey(),
     boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
@@ -289,7 +263,7 @@ export const athleteMilestones = pgTable("athlete_milestones", {
     ),
 }));
 
-// ENHANCED: Box analytics snapshots (daily/weekly/monthly aggregates)
+// AGGREGATE REPORTING TABLE: Box analytics snapshots (daily/weekly/monthly aggregates)
 export const boxAnalytics = pgTable("box_analytics", {
     id: uuid("id").defaultRandom().primaryKey(),
     boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
@@ -386,7 +360,7 @@ export const boxAnalytics = pgTable("box_analytics", {
     ),
 }));
 
-// SaaS Admin - Enhanced demo engagement tracking
+// SaaS ADMIN ANALYTICS: Demo engagement tracking
 export const demoEngagementMetrics = pgTable("demo_engagement_metrics", {
     id: uuid("id").defaultRandom().primaryKey(),
     boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
@@ -430,7 +404,246 @@ export const demoEngagementMetrics = pgTable("demo_engagement_metrics", {
     ),
 }));
 
-// NEW: Risk factor tracking for detailed analytics
+// ENHANCEMENT: Track effectiveness of interventions by linking them to subsequent outcomes
+export const interventionOutcomes = pgTable("intervention_outcomes", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    interventionId: uuid("intervention_id").references(() => athleteInterventions.id, { onDelete: "cascade" }).notNull(),
+    // Link to the athlete whose risk/behavior we are measuring post-intervention
+    membershipId: uuid("membership_id").references(() => boxMemberships.id, { onDelete: "cascade" }).notNull(),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
+
+    // Outcome Metrics (measured after a defined period post-intervention)
+    riskScoreChange: decimal("risk_score_change", { precision: 5, scale: 2 }), // Change in overall risk score
+    attendanceRateChange: decimal("attendance_rate_change", { precision: 5, scale: 2 }), // % change in attendance
+    checkinRateChange: decimal("checkin_rate_change", { precision: 5, scale: 2 }), // % change in checkin rate
+    wellnessScoreChange: decimal("wellness_score_change", { precision: 5, scale: 2 }), // Change in wellness score
+    prActivityChange: integer("pr_activity_change"), // Change in PR/Benchmark attempts
+
+    // Outcome Period
+    outcomePeriodStart: timestamp("outcome_period_start", { withTimezone: true }).notNull(), // When measurement started
+    outcomePeriodEnd: timestamp("outcome_period_end", { withTimezone: true }).notNull(), // When measurement ended
+
+    // Metadata
+    measuredAt: timestamp("measured_at", { withTimezone: true }).defaultNow().notNull(),
+    notes: text("notes"), // Qualitative notes on the outcome
+}, (table) => ({
+    interventionIdIdx: index("intervention_outcomes_intervention_id_idx").on(table.interventionId),
+    membershipIdIdx: index("intervention_outcomes_membership_id_idx").on(table.membershipId),
+    boxIdIdx: index("intervention_outcomes_box_id_idx").on(table.boxId),
+    measuredAtIdx: index("intervention_outcomes_measured_at_idx").on(table.measuredAt),
+    // Composite index for common queries
+    interventionMembershipIdx: index("intervention_outcomes_intervention_membership_idx").on(table.interventionId, table.membershipId),
+}));
+
+// ENHANCEMENT: Store pre-calculated wellness-performance correlations for reporting
+export const wellnessPerformanceCorrelations = pgTable("wellness_performance_correlations", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
+
+    // Correlation Details
+    wellnessMetric: text("wellness_metric").notNull(), // e.g., "avg_sleep_quality", "avg_energy_level"
+    performanceMetric: text("performance_metric").notNull(), // e.g., "avg_pr_score", "benchmark_completion_rate"
+    correlationType: text("correlation_type").notNull(), // e.g., "pearson", "spearman"
+
+    // Correlation Result
+    correlationValue: decimal("correlation_value", { precision: 4, scale: 3 }).notNull(), // -1 to 1
+    pValue: decimal("p_value", { precision: 6, scale: 5 }), // Statistical significance
+    sampleSize: integer("sample_size").notNull(), // Number of data points used
+
+    // Time Period
+    periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+    periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
+
+    // Metadata
+    calculatedAt: timestamp("calculated_at", { withTimezone: true }).defaultNow().notNull(),
+    version: text("version").default("1.0").notNull(), // For tracking model changes
+}, (table) => ({
+    boxIdIdx: index("wellness_performance_correlations_box_id_idx").on(table.boxId),
+    wellnessMetricIdx: index("wellness_performance_correlations_wellness_metric_idx").on(table.wellnessMetric),
+    performanceMetricIdx: index("wellness_performance_correlations_performance_metric_idx").on(table.performanceMetric),
+    calculatedAtIdx: index("wellness_performance_correlations_calculated_at_idx").on(table.calculatedAt),
+    // Composite index for common queries
+    boxWellnessPerformanceIdx: index("wellness_performance_correlations_box_wellness_performance_idx").on(
+        table.boxId, table.wellnessMetric, table.performanceMetric
+    ),
+    // Unique constraint for one correlation per box/metric/period
+    boxWellnessPerformancePeriodUnique: unique("wellness_performance_correlations_box_wellness_performance_period_unique").on(
+        table.boxId, table.wellnessMetric, table.performanceMetric, table.periodStart
+    ),
+    // Constraints
+    correlationValueRange: check(
+        "wellness_performance_correlations_value_range",
+        sql`${table.correlationValue} >= -1 AND ${table.correlationValue} <= 1`
+    ),
+    sampleSizePositive: check(
+        "wellness_performance_correlations_sample_size_positive",
+        sql`${table.sampleSize} > 0`
+    ),
+    pValueRange: check(
+        "wellness_performance_correlations_p_value_range",
+        sql`${table.pValue} >= 0 AND ${table.pValue} <= 1`
+    ),
+}));
+
+// ENHANCEMENT: Store pre-calculated coach performance KPIs for reporting and dashboards
+export const coachPerformanceMetrics = pgTable("coach_performance_metrics", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
+    coachMembershipId: uuid("coach_membership_id").references(() => boxMemberships.id, { onDelete: "cascade" }).notNull(),
+
+    // Performance Period
+    periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+    periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
+
+    // KPIs
+    athletesAssigned: integer("athletes_assigned").notNull(),
+    avgRiskScoreReduction: decimal("avg_risk_score_reduction", { precision: 5, scale: 2 }), // Avg change for assigned athletes
+    interventionsCompleted: integer("interventions_completed").notNull(),
+    alertsResolved: integer("alerts_resolved").notNull(),
+    avgTimeToAlertResolution: decimal("avg_time_to_alert_resolution", { precision: 8, scale: 2 }), // hours
+    athleteRetentionRate: decimal("athlete_retention_rate", { precision: 5, scale: 2 }), // % of assigned athletes retained
+    athletePrImprovementRate: decimal("athlete_pr_improvement_rate", { precision: 5, scale: 2 }), // % of assigned athletes with PRs
+
+    // Metadata
+    calculatedAt: timestamp("calculated_at", { withTimezone: true }).defaultNow().notNull(),
+    version: text("version").default("1.0").notNull(), // For tracking model changes
+}, (table) => ({
+    boxIdIdx: index("coach_performance_metrics_box_id_idx").on(table.boxId),
+    coachMembershipIdIdx: index("coach_performance_metrics_coach_membership_id_idx").on(table.coachMembershipId),
+    calculatedAtIdx: index("coach_performance_metrics_calculated_at_idx").on(table.calculatedAt),
+    // Composite index for common queries
+    boxCoachPeriodIdx: index("coach_performance_metrics_box_coach_period_idx").on(
+        table.boxId, table.coachMembershipId, table.periodStart
+    ),
+    // Unique constraint for one set of metrics per coach/box/period
+    boxCoachPeriodUnique: unique("coach_performance_metrics_box_coach_period_unique").on(
+        table.boxId, table.coachMembershipId, table.periodStart
+    ),
+    // Constraints
+    athletesAssignedPositive: check(
+        "coach_performance_metrics_athletes_assigned_positive",
+        sql`${table.athletesAssigned} >= 0`
+    ),
+    interventionsCompletedPositive: check(
+        "coach_performance_metrics_interventions_completed_positive",
+        sql`${table.interventionsCompleted} >= 0`
+    ),
+    alertsResolvedPositive: check(
+        "coach_performance_metrics_alerts_resolved_positive",
+        sql`${table.alertsResolved} >= 0`
+    ),
+    athleteRetentionRateRange: check(
+        "coach_performance_metrics_retention_rate_range",
+        sql`${table.athleteRetentionRate} >= 0 AND ${table.athleteRetentionRate} <= 100`
+    ),
+    athletePrImprovementRateRange: check(
+        "coach_performance_metrics_pr_improvement_rate_range",
+        sql`${table.athletePrImprovementRate} >= 0 AND ${table.athletePrImprovementRate} <= 100`
+    ),
+}));
+
+// ENHANCEMENT: Store detailed retention events for cohort analysis
+export const retentionEvents = pgTable("retention_events", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
+    membershipId: uuid("membership_id").references(() => boxMemberships.id, { onDelete: "cascade" }).notNull(),
+
+    // Event Details
+    eventType: text("event_type").notNull(), // "churn", "reactivation", "pause", "downgrade"
+    reason: text("reason"), // Optional reason (e.g., "price", "location", "injury")
+    notes: text("notes"), // Additional context
+
+    // Event Timestamps
+    eventDate: timestamp("event_date", { withTimezone: true }).notNull(), // When the event occurred
+    previousStatus: text("previous_status").notNull(), // Status before the event (e.g., "active")
+
+    // Cohort Information (calculated at event time)
+    cohortStartDate: timestamp("coach_start_date", { withTimezone: true }).notNull(), // When the athlete joined
+    daysInCohort: integer("days_in_cohort").notNull(), // How long they were in the cohort before event
+
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    boxIdIdx: index("retention_events_box_id_idx").on(table.boxId),
+    membershipIdIdx: index("retention_events_membership_id_idx").on(table.membershipId),
+    eventDateIdx: index("retention_events_event_date_idx").on(table.eventDate),
+    eventTypeIdx: index("retention_events_event_type_idx").on(table.eventType),
+    cohortStartDateIdx: index("retention_events_cohort_start_date_idx").on(table.cohortStartDate),
+    // Composite indexes for common queries
+    boxEventTypeIdx: index("retention_events_box_event_type_idx").on(table.boxId, table.eventType),
+    boxEventDateIdx: index("retention_events_box_event_date_idx").on(table.boxId, table.eventDate),
+    // Constraints
+    daysInCohortPositive: check(
+        "retention_events_days_in_cohort_positive",
+        sql`${table.daysInCohort} >= 0`
+    ),
+}));
+
+// ENHANCEMENT: Store billing/subscription health metrics for owner dashboards
+export const boxSubscriptionHealth = pgTable("box_subscription_health", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
+
+    // Health Period (e.g., Monthly snapshot)
+    periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+    periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
+
+    // --- Financial Health Metrics (derived from billing.ts) ---
+
+    // Recurring Revenue
+    mrr: decimal("mrr", { precision: 10, scale: 2 }), // Monthly Recurring Revenue for the period
+    arr: decimal("arr", { precision: 12, scale: 2 }), // Annual Recurring Revenue (MRR * 12 or calculated annually)
+
+    // MRR Movements (Churn, Expansion, Contraction)
+    churnedMrr: decimal("churned_mrr", { precision: 10, scale: 2 }),     // MRR lost due to cancellations/downgrades during the period
+    expansionMrr: decimal("expansion_mrr", { precision: 10, scale: 2 }), // MRR gained from upgrades/new subscriptions during the period
+    contractionMrr: decimal("contraction_mrr", { precision: 10, scale: 2 }), // MRR lost specifically from existing subscription downgrades during the period
+
+    // --- Plan Utilization Metrics (derived from billing.ts & core boxes table) ---
+
+    // Effective Plan Limits during the period (reflects the plan(s) active)
+    effectiveAthleteLimit: integer("effective_athlete_limit"), // Weighted average or snapshot of the plan's athlete limit(s) active during the period
+    effectiveCoachLimit: integer("effective_coach_limit"),     // Weighted average or snapshot of the plan's coach limit(s) active during the period
+
+    // Overages (derived from overageBilling)
+    totalOverageRevenue: decimal("total_overage_revenue", { precision: 10, scale: 2 }), // Total revenue from overages in the period
+
+    // --- Health Score (calculated) ---
+    // A composite score (0-100) based on financial stability (MRR growth, low churn)
+    // and plan fit (low overages might indicate good fit, high overages might indicate need to upgrade)
+    healthScore: decimal("health_score", { precision: 5, scale: 2 }),
+
+    // --- Metadata ---
+    calculatedAt: timestamp("calculated_at", { withTimezone: true }).defaultNow().notNull(),
+    version: text("version").default("1.0").notNull(), // For tracking model changes
+}, (table) => ({
+    boxIdIdx: index("box_subscription_health_box_id_idx").on(table.boxId),
+    calculatedAtIdx: index("box_subscription_health_calculated_at_idx").on(table.calculatedAt),
+    periodStartIdx: index("box_subscription_health_period_start_idx").on(table.periodStart),
+    // Composite index for common queries (e.g., get latest health snapshot for a box)
+    boxPeriodIdx: index("box_subscription_health_box_period_idx").on(table.boxId, table.periodStart),
+    // Unique constraint to ensure one health record per box per period
+    boxPeriodUnique: unique("box_subscription_health_box_period_unique").on(table.boxId, table.periodStart),
+
+    // --- Constraints ---
+    // MRR/ARR and financial movements can be negative (contraction/churn), so no positive checks for those.
+    // Overages are typically positive revenue.
+    totalOverageRevenuePositive: check(
+        "box_subscription_health_total_overage_revenue_positive",
+        sql`${table.totalOverageRevenue} >= 0`
+    ),
+    // Limits should generally be positive if present.
+    effectiveLimitsPositive: check(
+        "box_subscription_health_effective_limits_positive",
+        sql`(${table.effectiveAthleteLimit} IS NULL OR ${table.effectiveAthleteLimit} > 0) AND (${table.effectiveCoachLimit} IS NULL OR ${table.effectiveCoachLimit} > 0)`
+    ),
+    // Health score range
+    healthScoreRange: check(
+        "box_subscription_health_score_range",
+        sql`${table.healthScore} >= 0 AND ${table.healthScore} <= 100`
+    ),
+}));
+
+// DETAILED ANALYTICS TABLE: Risk factor tracking for detailed analytics
 export const riskFactorHistory = pgTable("risk_factor_history", {
     id: uuid("id").defaultRandom().primaryKey(),
     riskScoreId: uuid("risk_score_id").references(() => athleteRiskScores.id, { onDelete: "cascade" }).notNull(),
@@ -464,7 +677,7 @@ export const riskFactorHistory = pgTable("risk_factor_history", {
     ),
 }));
 
-// NEW: Alert escalation tracking
+// DETAILED AUDIT TABLE: Alert escalation tracking
 export const alertEscalations = pgTable("alert_escalations", {
     id: uuid("id").defaultRandom().primaryKey(),
     alertId: uuid("alert_id").references(() => athleteAlerts.id, { onDelete: "cascade" }).notNull(),
@@ -482,7 +695,8 @@ export const alertEscalations = pgTable("alert_escalations", {
     toSeverityIdx: index("alert_escalations_to_severity_idx").on(table.toSeverity),
 }));
 
-// Relations - Enhanced with proper naming and relationship clarification
+// --- Relations ---
+
 export const athleteRiskScoresRelations = relations(athleteRiskScores, ({ one, many }) => ({
     box: one(boxes, {
         fields: [athleteRiskScores.boxId],
@@ -527,7 +741,7 @@ export const athleteAlertsRelations = relations(athleteAlerts, ({ one, many }) =
     escalations: many(alertEscalations, { relationName: "alert_escalations" }),
 }));
 
-export const athleteInterventionsRelations = relations(athleteInterventions, ({ one }) => ({
+export const athleteInterventionsRelations = relations(athleteInterventions, ({ one, many }) => ({ // Changed to many for outcomes
     box: one(boxes, {
         fields: [athleteInterventions.boxId],
         references: [boxes.id],
@@ -548,6 +762,7 @@ export const athleteInterventionsRelations = relations(athleteInterventions, ({ 
         references: [athleteAlerts.id],
         relationName: "alert_interventions"
     }),
+    outcomes: many(interventionOutcomes, { relationName: "intervention_outcomes" }), // Link to outcomes
 }));
 
 export const athleteMilestonesRelations = relations(athleteMilestones, ({ one }) => ({
@@ -597,5 +812,67 @@ export const alertEscalationsRelations = relations(alertEscalations, ({ one }) =
         fields: [alertEscalations.alertId],
         references: [athleteAlerts.id],
         relationName: "alert_escalations"
+    }),
+}));
+
+// --- NEW RELATIONS FOR ENHANCEMENT TABLES ---
+
+export const interventionOutcomesRelations = relations(interventionOutcomes, ({ one }) => ({
+    intervention: one(athleteInterventions, {
+        fields: [interventionOutcomes.interventionId],
+        references: [athleteInterventions.id],
+        relationName: "intervention_outcomes"
+    }),
+    membership: one(boxMemberships, {
+        fields: [interventionOutcomes.membershipId],
+        references: [boxMemberships.id],
+        relationName: "membership_intervention_outcomes"
+    }),
+    box: one(boxes, {
+        fields: [interventionOutcomes.boxId],
+        references: [boxes.id],
+        relationName: "box_intervention_outcomes"
+    }),
+}));
+
+export const wellnessPerformanceCorrelationsRelations = relations(wellnessPerformanceCorrelations, ({ one }) => ({
+    box: one(boxes, {
+        fields: [wellnessPerformanceCorrelations.boxId],
+        references: [boxes.id],
+        relationName: "box_wellness_performance_correlations"
+    }),
+}));
+
+export const coachPerformanceMetricsRelations = relations(coachPerformanceMetrics, ({ one }) => ({
+    box: one(boxes, {
+        fields: [coachPerformanceMetrics.boxId],
+        references: [boxes.id],
+        relationName: "box_coach_performance_metrics"
+    }),
+    coach: one(boxMemberships, { // Link to the coach membership
+        fields: [coachPerformanceMetrics.coachMembershipId],
+        references: [boxMemberships.id],
+        relationName: "coach_performance_metrics"
+    }),
+}));
+
+export const retentionEventsRelations = relations(retentionEvents, ({ one }) => ({
+    box: one(boxes, {
+        fields: [retentionEvents.boxId],
+        references: [boxes.id],
+        relationName: "box_retention_events"
+    }),
+    membership: one(boxMemberships, {
+        fields: [retentionEvents.membershipId],
+        references: [boxMemberships.id],
+        relationName: "membership_retention_events"
+    }),
+}));
+
+export const boxSubscriptionHealthRelations = relations(boxSubscriptionHealth, ({ one }) => ({
+    box: one(boxes, {
+        fields: [boxSubscriptionHealth.boxId],
+        references: [boxes.id],
+        relationName: "box_subscription_health"
     }),
 }));

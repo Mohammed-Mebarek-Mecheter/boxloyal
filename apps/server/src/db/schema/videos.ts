@@ -1,4 +1,4 @@
-﻿// db/schema/video-strategy-additions.ts - New tables required for Video Strategy
+﻿// db/schema/videos.ts
 import {
     pgTable,
     text,
@@ -10,34 +10,12 @@ import {
     json,
     check,
     unique,
-    decimal,
-    pgEnum
+    decimal
 } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 import { boxes, boxMemberships } from "./core";
 import {athletePrs} from "@/db/schema/athletes";
-
-// Enums for new video strategy features
-export const feedbackTypeEnum = pgEnum("feedback_type", [
-    "technique",
-    "encouragement",
-    "correction",
-    "celebration"
-]);
-
-export const socialPlatformEnum = pgEnum("social_platform", [
-    "box_feed",
-    "instagram",
-    "facebook",
-    "public"
-]);
-
-export const shareTypeEnum = pgEnum("share_type", [
-    "pr_celebration",
-    "progress_update",
-    "technique_showcase",
-    "milestone_achievement"
-]);
+import {feedbackTypeEnum, shareTypeEnum, socialPlatformEnum} from "@/db/schema/enums";
 
 // Coach feedback on PR videos - core to the strategy
 export const prCoachFeedback = pgTable("pr_coach_feedback", {
