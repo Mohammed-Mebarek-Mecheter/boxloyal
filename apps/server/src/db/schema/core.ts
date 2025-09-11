@@ -231,6 +231,7 @@ export const boxMemberships = pgTable("box_memberships", {
     boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
     userId: text("user_id").references(() => user.id, { onDelete: "cascade" }).notNull(),
     role: userRoleEnum("role").notNull(),
+    displayName: text("display_name").notNull(),
 
     // Athlete-specific fields
     emergencyContact: text("emergency_contact"),

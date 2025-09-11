@@ -1,4 +1,4 @@
-// lib/services/athlete-video-service.ts
+// lib/services/athlete-video-service.ts - Enhanced with Coach Feedback & Social Features
 import { db } from "@/db";
 import {
     athletePrs,
@@ -6,13 +6,12 @@ import {
     videoConsents,
     videoProcessingEvents,
     gumletWebhookEvents,
-    boxMemberships
+    boxMemberships,
+    prCoachFeedback,
+    videoSocialShares
 } from "@/db/schema";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql, count, gte } from "drizzle-orm";
 import { GumletService } from "../gumlet-service";
-import type {
-    VideoUploadOptions,
-} from "../gumlet-service";
 
 export interface VideoUploadResult {
     gumletAssetId: string;
@@ -37,34 +36,43 @@ export interface PRVideoData {
     customThumbnailTime?: number;
 }
 
-export interface VideoAnalytics {
-    views: number;
-    playTime: number;
-    uniqueViewers: number;
-    completionRate: number;
-    engagementScore: number;
-    peakViewingTime: number;
+export interface CoachFeedback {
+    id: string;
+    feedback: string;
+    timestamp: Date;
+    coachName: string;
+    coachId: string;
+    feedbackType: 'technique' | 'encouragement' | 'correction' | 'celebration';
+    isPublic: boolean;
 }
 
-export interface FormAnalysisResult {
-    technicalScore: number;
-    recommendations: string[];
-    keyPoints: Array<{
-        timestamp: number;
-        issue: string;
-        severity: 'low' | 'medium' | 'high';
-        suggestion: string;
-    }>;
-    comparisonMetrics?: {
-        previousPR?: {
-            improvement: number;
-            technicalDifferences: string[];
-        };
-    };
+export interface SocialShareOptions {
+    platform: 'box_feed' | 'instagram' | 'facebook';
+    caption?: string;
+    includeStats?: boolean;
+    tagBoxMembers?: string[];
 }
+
+export interface VideoEngagementMetrics {
+    views: number;
+    likes: number;
+    comments: number;
+    shares: number;
+    averageWatchTime: number;
+    completionRate: number;
+    coachInteractions: number;
+    memberInteractions: number;
+}
+
+interface CelebrationMilestone {
+    type: string;
+    achievement: string;
+    value: string;
+}
+
 export class AthleteVideoService {
     /**
-     * Create video asset and get upload URL for PR recording
+     * Initialize PR video with enhanced celebration metadata
      */
     static async initializePRVideo(
         boxId: string,
@@ -75,31 +83,39 @@ export class AthleteVideoService {
             tags?: string[];
             expectedDuration?: number;
             quality?: 'standard' | 'hd' | 'premium';
+            isForCelebration?: boolean;
+            prValue?: number;
+            prUnit?: string;
         } = {}
     ): Promise<VideoUploadResult> {
-        // Get movement details for video metadata
-        const movement = await db
-            .select()
-            .from(movements)
-            .where(eq(movements.id, movementId))
-            .limit(1);
+        // Get movement and athlete details for enhanced metadata
+        const [movement, athlete] = await Promise.all([
+            db.select().from(movements).where(eq(movements.id, movementId)).limit(1),
+            db.select().from(boxMemberships).where(eq(boxMemberships.id, athleteId)).limit(1)
+        ]);
 
-        if (!movement.length) {
-            throw new Error("Movement not found");
+        if (!movement.length || !athlete.length) {
+            throw new Error("Movement or athlete not found");
         }
 
-        const videoOptions: VideoUploadOptions = {
-            title: options.title || `${movement[0].name} PR - ${new Date().toLocaleDateString()}`,
+        const videoTitle = options.title ||
+            (options.prValue ?
+                `${movement[0].name} PR - ${options.prValue}${options.prUnit} - ${new Date().toLocaleDateString()}` :
+                `${movement[0].name} - ${new Date().toLocaleDateString()}`);
+
+        const videoOptions = {
+            title: videoTitle,
             tags: [
                 'pr',
                 'crossfit',
                 movement[0].name.toLowerCase().replace(/\s+/g, '-'),
                 movement[0].category,
+                ...(options.isForCelebration ? ['celebration', 'achievement'] : []),
                 ...(options.tags || [])
             ],
-            format: 'ABR', // HLS + DASH for adaptive streaming
+            format: 'ABR' as const,
             generateThumbnail: true,
-            thumbnailAtSecond: 2, // Default thumbnail at 2 seconds
+            thumbnailAtSecond: 3, // Better timing for lift videos
             enablePreviewThumbnails: true,
             keepOriginal: true,
             metadata: {
@@ -109,7 +125,11 @@ export class AthleteVideoService {
                 movementName: movement[0].name,
                 category: movement[0].category,
                 recordedAt: new Date().toISOString(),
-                quality: options.quality || 'standard'
+                quality: options.quality || 'standard',
+                isForCelebration: options.isForCelebration || false,
+                prValue: options.prValue,
+                prUnit: options.prUnit,
+                athletePublicId: athlete[0].publicId
             }
         };
 
@@ -127,7 +147,7 @@ export class AthleteVideoService {
     }
 
     /**
-     * Complete video upload and create PR record with video
+     * Complete PR video upload with celebration triggers
      */
     static async completePRWithVideo(
         boxId: string,
@@ -138,46 +158,383 @@ export class AthleteVideoService {
             unit: string;
             reps?: number;
             notes?: string;
-            coachNotes?: string;
             achievedAt?: Date;
         },
-        videoData: PRVideoData
+        videoData: PRVideoData,
+        celebrationOptions: {
+            notifyCoaches?: boolean;
+            shareToBoxFeed?: boolean;
+            autoGenerateShareText?: boolean;
+        } = {}
     ) {
-        // Upload video file if provided
+        // Upload video if provided
         if (videoData.videoFile) {
-            await GumletService.uploadVideo(
-                (await GumletService.getAssetDetails(videoData.gumletAssetId)).output?.playback_url || '',
-                videoData.videoFile
-            );
+            // Get upload URL from existing asset
+            const assetDetails = await GumletService.getAssetDetails(videoData.gumletAssetId);
+            if (assetDetails && assetDetails.status === 'upload-pending') {
+                // Use the upload_url from asset creation, not playback_url
+                const uploadUrl = assetDetails.input?.title ?
+                    `https://video.gumlet.io/upload/${videoData.gumletAssetId}` :
+                    assetDetails.output?.playback_url;
+
+                if (uploadUrl) {
+                    await GumletService.uploadVideo(uploadUrl, videoData.videoFile);
+                }
+            }
         }
 
-        // Update thumbnail if custom time specified
+        // Custom thumbnail timing
         if (videoData.customThumbnailTime) {
             await GumletService.updateThumbnail(videoData.gumletAssetId, videoData.customThumbnailTime);
         }
 
-        // Log the PR with video data using existing method
-        const pr = await this.logPrWithVideo(boxId, athleteId, movementId, prData, videoData);
+        // Create PR with celebration enabled
+        const { pr, celebrationData } = await this.logPrWithVideo(boxId, athleteId, movementId, prData, videoData);
 
-        // Record initial video processing event
-        await db.insert(videoProcessingEvents).values({
-            prId: pr.id,
-            gumletAssetId: videoData.gumletAssetId,
-            eventType: 'upload_completed',
-            status: 'processing',
-            progress: 0,
-            metadata: {
-                uploadedAt: new Date().toISOString(),
-                fileSize: videoData.gumletMetadata?.fileSize,
-                duration: videoData.videoDuration
-            }
-        });
+        // Trigger celebration notifications
+        if (celebrationOptions.notifyCoaches !== false) {
+            await this.notifyCoachesOfNewPR(boxId, pr.id, celebrationData);
+        }
 
-        return pr;
+        // Auto-share to box feed if requested and consent allows
+        if (celebrationOptions.shareToBoxFeed &&
+            videoData.consentTypes.includes('box_visibility')) {
+            await this.shareToBoxFeed(pr.id, {
+                autoGenerated: celebrationOptions.autoGenerateShareText !== false
+            });
+        }
+
+        return { pr, celebrationData };
     }
 
     /**
-     * Log a PR with video support (internal method)
+     * Add coach feedback to a PR video
+     */
+    static async addCoachFeedback(
+        prId: string,
+        coachId: string,
+        feedback: {
+            text: string;
+            type: 'technique' | 'encouragement' | 'correction' | 'celebration';
+            isPublic?: boolean;
+            videoTimestamp?: number;
+        }
+    ): Promise<CoachFeedback> {
+        // Get coach details
+        const coach = await db
+            .select({
+                id: boxMemberships.id,
+                publicId: boxMemberships.publicId,
+                displayName: boxMemberships.displayName,
+                role: boxMemberships.role
+            })
+            .from(boxMemberships)
+            .where(eq(boxMemberships.id, coachId))
+            .limit(1);
+
+        if (!coach.length || !['owner', 'head_coach', 'coach'].includes(coach[0].role)) {
+            throw new Error("Invalid coach or insufficient permissions");
+        }
+
+        const [feedbackRecord] = await db
+            .insert(prCoachFeedback)
+            .values({
+                prId,
+                coachMembershipId: coachId,
+                feedback: feedback.text,
+                feedbackType: feedback.type,
+                isPublic: feedback.isPublic ?? true,
+                // Convert number to string for decimal field
+                videoTimestamp: feedback.videoTimestamp ? feedback.videoTimestamp.toString() : null,
+                createdAt: new Date()
+            })
+            .returning();
+
+        return {
+            id: feedbackRecord.id,
+            feedback: feedbackRecord.feedback,
+            timestamp: feedbackRecord.createdAt,
+            coachName: coach[0].displayName || 'Coach',
+            coachId: coach[0].id,
+            feedbackType: feedbackRecord.feedbackType,
+            isPublic: feedbackRecord.isPublic
+        };
+    }
+
+    /**
+     * Get coach feedback for a PR
+     */
+    static async getCoachFeedback(
+        prId: string,
+        viewerMembershipId: string,
+        includePrivate: boolean = false
+    ): Promise<CoachFeedback[]> {
+        const conditions = [eq(prCoachFeedback.prId, prId)];
+
+        if (!includePrivate) {
+            conditions.push(eq(prCoachFeedback.isPublic, true));
+        }
+
+        const feedback = await db
+            .select({
+                feedback: prCoachFeedback,
+                coach: {
+                    id: boxMemberships.id,
+                    displayName: boxMemberships.displayName,
+                    publicId: boxMemberships.publicId
+                }
+            })
+            .from(prCoachFeedback)
+            .innerJoin(boxMemberships, eq(prCoachFeedback.coachMembershipId, boxMemberships.id))
+            .where(and(...conditions))
+            .orderBy(prCoachFeedback.createdAt);
+
+        return feedback.map(({ feedback: f, coach }) => ({
+            id: f.id,
+            feedback: f.feedback,
+            timestamp: f.createdAt,
+            coachName: coach.displayName || 'Coach',
+            coachId: coach.id,
+            feedbackType: f.feedbackType,
+            isPublic: f.isPublic
+        }));
+    }
+
+    /**
+     * Share PR video to box social feed
+     */
+    static async shareToBoxFeed(
+        prId: string,
+        options: {
+            caption?: string;
+            autoGenerated?: boolean;
+            includeStats?: boolean;
+        } = {}
+    ) {
+        // Get PR details for auto-caption generation
+        const prDetails = await db
+            .select({
+                pr: athletePrs,
+                movement: movements,
+                athlete: {
+                    displayName: boxMemberships.displayName,
+                    publicId: boxMemberships.publicId
+                }
+            })
+            .from(athletePrs)
+            .innerJoin(movements, eq(athletePrs.movementId, movements.id))
+            .innerJoin(boxMemberships, eq(athletePrs.membershipId, boxMemberships.id))
+            .where(eq(athletePrs.id, prId))
+            .limit(1);
+
+        if (!prDetails.length) {
+            throw new Error("PR not found");
+        }
+
+        const { pr, movement, athlete } = prDetails[0];
+
+        let caption = options.caption;
+        if (!caption && options.autoGenerated !== false) {
+            caption = `🎉 ${athlete.displayName || 'Athlete'} just hit a new ${movement.name} PR! ` +
+                `${pr.value}${pr.unit}${pr.reps ? ` for ${pr.reps} reps` : ''} ` +
+                `${pr.notes ? `\n"${pr.notes}"` : ''} #CrossFit #PR #${movement.name.replace(/\s+/g, '')}`;
+        }
+
+        const [share] = await db
+            .insert(videoSocialShares)
+            .values({
+                prId,
+                platform: 'box_feed',
+                caption,
+                shareType: 'pr_celebration',
+                isAutoGenerated: options.autoGenerated ?? true,
+                sharedAt: new Date()
+            })
+            .returning();
+
+        return share;
+    }
+
+    /**
+     * Get box social feed with video PRs
+     */
+    static async getBoxSocialFeed(
+        boxId: string,
+        options: {
+            limit?: number;
+            days?: number;
+            includePrivate?: boolean;
+            viewerMembershipId?: string;
+        } = {}
+    ) {
+        const { limit = 20, days = 30, viewerMembershipId } = options;
+
+        const dateFrom = new Date();
+        dateFrom.setDate(dateFrom.getDate() - days);
+
+        // Get PRs shared to box feed
+        const feedItems = await db
+            .select({
+                pr: athletePrs,
+                movement: movements,
+                athlete: {
+                    displayName: boxMemberships.displayName,
+                    publicId: boxMemberships.publicId
+                },
+                share: videoSocialShares
+            })
+            .from(athletePrs)
+            .innerJoin(movements, eq(athletePrs.movementId, movements.id))
+            .innerJoin(boxMemberships, eq(athletePrs.membershipId, boxMemberships.id))
+            .innerJoin(videoSocialShares, eq(videoSocialShares.prId, athletePrs.id))
+            .innerJoin(videoConsents, and(
+                eq(videoConsents.prId, athletePrs.id),
+                sql`'box_visibility' = ANY(${videoConsents.consentTypes})`,
+                sql`${videoConsents.revokedAt} IS NULL`
+            ))
+            .where(and(
+                eq(athletePrs.boxId, boxId),
+                eq(videoSocialShares.platform, 'box_feed'),
+                gte(videoSocialShares.sharedAt, dateFrom),
+                sql`${athletePrs.gumletAssetId} IS NOT NULL`,
+                eq(athletePrs.videoProcessingStatus, 'ready')
+            ))
+            .orderBy(desc(videoSocialShares.sharedAt))
+            .limit(limit);
+
+        // Add engagement metrics and coach feedback for each item
+        const enhancedFeedItems = await Promise.all(
+            feedItems.map(async (item) => {
+                const [coachFeedback, engagementMetrics] = await Promise.all([
+                    this.getCoachFeedback(item.pr.id, viewerMembershipId || '', false),
+                    this.getVideoEngagementMetrics(item.pr.gumletAssetId!)
+                ]);
+
+                return {
+                    ...item,
+                    playbackUrls: GumletService.getPlaybackUrls(
+                        item.pr.gumletAssetId!,
+                        item.pr.collectionId || undefined
+                    ),
+                    thumbnailUrl: item.pr.thumbnailUrl,
+                    coachFeedback,
+                    engagementMetrics,
+                    canInteract: !!viewerMembershipId
+                };
+            })
+        );
+
+        return enhancedFeedItems;
+    }
+
+    /**
+     * Get video engagement metrics for analytics
+     */
+    static async getVideoEngagementMetrics(gumletAssetId: string): Promise<VideoEngagementMetrics> {
+        try {
+            const analytics = await GumletService.getVideoAnalytics(gumletAssetId, '30d');
+
+            // Get coach interactions count
+            const coachInteractions = await db
+                .select({ count: count() })
+                .from(prCoachFeedback)
+                .innerJoin(athletePrs, eq(prCoachFeedback.prId, athletePrs.id))
+                .where(eq(athletePrs.gumletAssetId, gumletAssetId));
+
+            const coachCount = coachInteractions.length > 0 ? coachInteractions[0].count : 0;
+
+            return {
+                views: analytics.views,
+                likes: 0, // To be implemented with likes feature
+                comments: coachCount,
+                shares: 0, // To be implemented with shares tracking
+                averageWatchTime: analytics.playTime / Math.max(analytics.views, 1),
+                completionRate: analytics.completionRate,
+                coachInteractions: coachCount,
+                memberInteractions: 0 // To be implemented
+            };
+        } catch (error) {
+            return {
+                views: 0,
+                likes: 0,
+                comments: 0,
+                shares: 0,
+                averageWatchTime: 0,
+                completionRate: 0,
+                coachInteractions: 0,
+                memberInteractions: 0
+            };
+        }
+    }
+
+    /**
+     * Notify coaches of new PR video for intervention opportunities
+     */
+    private static async notifyCoachesOfNewPR(
+        boxId: string,
+        prId: string,
+        celebrationData?: any
+    ) {
+        // Get all active coaches for the box
+        const coaches = await db
+            .select({
+                id: boxMemberships.id,
+                userId: boxMemberships.userId,
+                displayName: boxMemberships.displayName,
+                role: boxMemberships.role
+            })
+            .from(boxMemberships)
+            .where(and(
+                eq(boxMemberships.boxId, boxId),
+                eq(boxMemberships.isActive, true),
+                sql`${boxMemberships.role} IN ('owner', 'head_coach', 'coach')`
+            ));
+
+        // Get PR details for notification
+        const prDetails = await db
+            .select({
+                pr: athletePrs,
+                movement: movements,
+                athlete: {
+                    displayName: boxMemberships.displayName,
+                    publicId: boxMemberships.publicId
+                }
+            })
+            .from(athletePrs)
+            .innerJoin(movements, eq(athletePrs.movementId, movements.id))
+            .innerJoin(boxMemberships, eq(athletePrs.membershipId, boxMemberships.id))
+            .where(eq(athletePrs.id, prId))
+            .limit(1);
+
+        if (!prDetails.length) return;
+
+        const { pr, movement, athlete } = prDetails[0];
+
+        // Create notifications for coaches (implement your notification system here)
+        const notifications = coaches.map(coach => ({
+            recipientId: coach.userId,
+            type: 'new_pr_video',
+            title: 'New PR Video to Review',
+            message: `${athlete.displayName || 'An athlete'} just logged a ${movement.name} PR with video!`,
+            data: {
+                prId: pr.id,
+                athleteName: athlete.displayName,
+                movement: movement.name,
+                value: `${pr.value}${pr.unit}`,
+                hasVideo: true,
+                celebrationData
+            },
+            actionUrl: `/coach/review-pr/${pr.publicId}`,
+            createdAt: new Date()
+        }));
+
+        // TODO: Implement actual notification sending
+        console.log('Coach notifications created:', notifications.length);
+        return notifications;
+    }
+
+    /**
+     * Log PR with video data (private method)
      */
     private static async logPrWithVideo(
         boxId: string,
@@ -188,12 +545,18 @@ export class AthleteVideoService {
             unit: string;
             reps?: number;
             notes?: string;
-            coachNotes?: string;
             achievedAt?: Date;
         },
         videoData: PRVideoData
     ) {
         const publicId = crypto.randomUUID();
+
+        // Get movement for celebration context
+        const movement = await db
+            .select()
+            .from(movements)
+            .where(eq(movements.id, movementId))
+            .limit(1);
 
         const [pr] = await db
             .insert(athletePrs)
@@ -205,10 +568,10 @@ export class AthleteVideoService {
                 unit: prData.unit,
                 reps: prData.reps,
                 notes: prData.notes,
-                coachNotes: prData.coachNotes,
                 achievedAt: prData.achievedAt || new Date(),
                 publicId,
                 verifiedByCoach: false,
+                isCelebrated: true, // Always celebrate video PRs
                 // Video fields
                 gumletAssetId: videoData.gumletAssetId,
                 videoProcessingStatus: 'upload_pending',
@@ -236,19 +599,202 @@ export class AthleteVideoService {
             progress: 0,
         });
 
-        return pr;
+        // Generate celebration data
+        const celebrationData = movement.length > 0 ?
+            await this.generateCelebrationData(boxId, athleteId, pr, movement[0], true) : null;
+
+        return { pr, celebrationData };
     }
 
     /**
-     * Get video processing status and details
+     * Generate celebration data for video PRs
      */
-    static async getVideoStatus(gumletAssetId: string): Promise<{
-        status: string;
-        progress: number;
-        playbackUrls?: any;
-        thumbnailUrls?: string[];
-        error?: string;
-    }> {
+    private static async generateCelebrationData(
+        boxId: string,
+        athleteId: string,
+        pr: typeof athletePrs.$inferSelect,
+        movement: typeof movements.$inferSelect,
+        hasVideo: boolean
+    ) {
+        const celebrationData: {
+            showConfetti: boolean;
+            badgesAwarded: any[];
+            milestones: CelebrationMilestone[];
+            socialShareData: {
+                title: string;
+                description: string;
+                imageUrl?: string;
+            };
+        } = {
+            showConfetti: true,
+            badgesAwarded: [],
+            milestones: [],
+            socialShareData: {
+                title: `New ${movement.name} PR!`,
+                description: `Just hit ${pr.value}${pr.unit}${pr.reps ? ` for ${pr.reps} reps` : ''} in ${movement.name}!`,
+                imageUrl: pr.thumbnailUrl || ''
+            }
+        };
+
+        // Check if this is first video-verified PR
+        const videoVerifiedCount = await db
+            .select({ count: count() })
+            .from(athletePrs)
+            .where(and(
+                eq(athletePrs.boxId, boxId),
+                eq(athletePrs.membershipId, athleteId),
+                sql`${athletePrs.gumletAssetId} IS NOT NULL`
+            ));
+
+        if (videoVerifiedCount[0].count === 1) {
+            celebrationData.milestones.push({
+                type: 'video_verified',
+                achievement: 'First Video Verified PR!',
+                value: 'Journey documented'
+            });
+        }
+
+        return celebrationData;
+    }
+
+    /**
+     * Get athlete's video journey for progress visualization
+     */
+    static async getAthleteVideoJourney(
+        boxId: string,
+        athleteId: string,
+        options: {
+            movementId?: string;
+            timeframe?: 'month' | 'quarter' | 'year' | 'all';
+            includeCoachFeedback?: boolean;
+            limit?: number;
+        } = {}
+    ) {
+        const { movementId, timeframe = 'all', includeCoachFeedback = true, limit = 50 } = options;
+
+        let dateFrom: Date | undefined;
+        if (timeframe !== 'all') {
+            dateFrom = new Date();
+            switch (timeframe) {
+                case 'month':
+                    dateFrom.setMonth(dateFrom.getMonth() - 1);
+                    break;
+                case 'quarter':
+                    dateFrom.setMonth(dateFrom.getMonth() - 3);
+                    break;
+                case 'year':
+                    dateFrom.setFullYear(dateFrom.getFullYear() - 1);
+                    break;
+            }
+        }
+
+        const conditions = [
+            eq(athletePrs.boxId, boxId),
+            eq(athletePrs.membershipId, athleteId),
+            sql`${athletePrs.gumletAssetId} IS NOT NULL`
+        ];
+
+        if (movementId) {
+            conditions.push(eq(athletePrs.movementId, movementId));
+        }
+
+        if (dateFrom) {
+            conditions.push(gte(athletePrs.achievedAt, dateFrom));
+        }
+
+        const journey = await db
+            .select({
+                pr: athletePrs,
+                movement: movements
+            })
+            .from(athletePrs)
+            .innerJoin(movements, eq(athletePrs.movementId, movements.id))
+            .where(and(...conditions))
+            .orderBy(athletePrs.achievedAt)
+            .limit(limit);
+
+        // Enhance with video data and coach feedback
+        const enhancedJourney = await Promise.all(
+            journey.map(async ({ pr, movement }) => {
+                const playbackUrls = GumletService.getPlaybackUrls(
+                    pr.gumletAssetId!,
+                    pr.collectionId || undefined
+                );
+
+                // Add explicit type for coachFeedback
+                let coachFeedback: CoachFeedback[] = [];
+                if (includeCoachFeedback) {
+                    coachFeedback = await this.getCoachFeedback(pr.id, athleteId, false);
+                }
+
+                return {
+                    pr,
+                    movement,
+                    playbackUrls,
+                    thumbnailUrl: pr.thumbnailUrl,
+                    coachFeedback,
+                    videoReady: pr.videoProcessingStatus === 'ready'
+                };
+            })
+        );
+
+        return enhancedJourney;
+    }
+
+    /**
+     * Create coach feedback summary for intervention insights
+     */
+    static async getCoachFeedbackSummary(
+        boxId: string,
+        athleteId: string,
+        days: number = 30
+    ) {
+        const dateFrom = new Date();
+        dateFrom.setDate(dateFrom.getDate() - days);
+
+        const feedbackSummary = await db
+            .select({
+                feedback: prCoachFeedback,
+                movement: movements,
+                pr: {
+                    achievedAt: athletePrs.achievedAt,
+                    value: athletePrs.value,
+                    unit: athletePrs.unit
+                }
+            })
+            .from(prCoachFeedback)
+            .innerJoin(athletePrs, eq(prCoachFeedback.prId, athletePrs.id))
+            .innerJoin(movements, eq(athletePrs.movementId, movements.id))
+            .where(and(
+                eq(athletePrs.boxId, boxId),
+                eq(athletePrs.membershipId, athleteId),
+                gte(prCoachFeedback.createdAt, dateFrom)
+            ))
+            .orderBy(desc(prCoachFeedback.createdAt));
+
+        // Analyze feedback patterns
+        const feedbackByType = feedbackSummary.reduce((acc, item) => {
+            const type = item.feedback.feedbackType;
+            if (!acc[type]) acc[type] = [];
+            acc[type].push(item);
+            return acc;
+        }, {} as Record<string, any[]>);
+
+        const insights = {
+            totalFeedback: feedbackSummary.length,
+            feedbackByType,
+            recentTechniqueConcerns: feedbackByType.correction?.length || 0,
+            encouragementReceived: feedbackByType.encouragement?.length || 0,
+            celebrationsReceived: feedbackByType.celebration?.length || 0,
+            coachEngagementScore: feedbackSummary.length > 0 ?
+                (feedbackByType.encouragement?.length || 0) + (feedbackByType.celebration?.length || 0) : 0
+        };
+
+        return insights;
+    }
+
+    // Keep existing methods from original service
+    static async getVideoStatus(gumletAssetId: string) {
         try {
             const assetDetails = await GumletService.getAssetDetails(gumletAssetId);
 
@@ -270,338 +816,6 @@ export class AthleteVideoService {
         }
     }
 
-    /**
-     * Get video analytics for PR videos
-     */
-    static async getVideoAnalytics(gumletAssetId: string, timeframe: '24h' | '7d' | '30d' = '7d'): Promise<VideoAnalytics> {
-        const analytics = await GumletService.getVideoAnalytics(gumletAssetId, timeframe);
-
-        // Calculate engagement score based on completion rate and unique viewers
-        const engagementScore = (analytics.completionRate * 0.6) +
-            (Math.min(analytics.uniqueViewers / 10, 1) * 0.4) * 100;
-
-        return {
-            ...analytics,
-            engagementScore: Math.round(engagementScore),
-            peakViewingTime: analytics.playTime > 0 ? analytics.playTime / analytics.views : 0
-        };
-    }
-
-    /**
-     * Update video consent for a PR
-     */
-    static async updateVideoConsent(
-        prId: string,
-        membershipId: string,
-        consentTypes: string[]
-    ) {
-        // First, revoke existing consent
-        await db
-            .update(videoConsents)
-            .set({
-                revokedAt: new Date(),
-            })
-            .where(and(
-                eq(videoConsents.prId, prId),
-                eq(videoConsents.membershipId, membershipId)
-            ));
-
-        // Create new consent record
-        const [consent] = await db
-            .insert(videoConsents)
-            .values({
-                membershipId,
-                prId,
-                consentTypes,
-                givenAt: new Date()
-            })
-            .returning();
-
-        return consent;
-    }
-
-    /**
-     * Get athlete's video history with analytics
-     */
-    static async getAthleteVideoHistory(
-        boxId: string,
-        athleteId: string,
-        options: {
-            limit?: number;
-            movementId?: string;
-            includeAnalytics?: boolean;
-            dateFrom?: Date;
-            dateTo?: Date;
-        } = {}
-    ) {
-        const { limit = 20, includeAnalytics = false } = options;
-
-        const conditions = [
-            eq(athletePrs.boxId, boxId),
-            eq(athletePrs.membershipId, athleteId),
-            sql`${athletePrs.gumletAssetId} IS NOT NULL`
-        ];
-
-        if (options.movementId) {
-            conditions.push(eq(athletePrs.movementId, options.movementId));
-        }
-
-        if (options.dateFrom) {
-            conditions.push(sql`${athletePrs.achievedAt} >= ${options.dateFrom}`);
-        }
-
-        if (options.dateTo) {
-            conditions.push(sql`${athletePrs.achievedAt} <= ${options.dateTo}`);
-        }
-
-        const prs = await db
-            .select({
-                pr: athletePrs,
-                movement: movements
-            })
-            .from(athletePrs)
-            .innerJoin(movements, eq(athletePrs.movementId, movements.id))
-            .where(and(...conditions))
-            .orderBy(desc(athletePrs.achievedAt))
-            .limit(limit);
-
-        // Add video analytics if requested
-        if (includeAnalytics) {
-            const prsWithAnalytics = await Promise.all(
-                prs.map(async ({ pr, movement }) => {
-                    let analytics = null;
-                    try {
-                        analytics = await this.getVideoAnalytics(pr.gumletAssetId!);
-                    } catch (error) {
-                        console.warn(`Failed to get analytics for video ${pr.gumletAssetId}:`, error);
-                    }
-
-                    return {
-                        pr,
-                        movement,
-                        videoAnalytics: analytics,
-                        playbackUrls: GumletService.getPlaybackUrls(pr.gumletAssetId!, pr.collectionId || undefined)
-                    };
-                })
-            );
-
-            return prsWithAnalytics;
-        }
-
-        return prs.map(({ pr, movement }) => ({
-            pr,
-            movement,
-            playbackUrls: GumletService.getPlaybackUrls(pr.gumletAssetId!, pr.collectionId || undefined)
-        }));
-    }
-
-    /**
-     * Get box video statistics
-     */
-    static async getBoxVideoStats(boxId: string, days: number = 30): Promise<{
-        totalVideos: number;
-        totalViews: number;
-        totalPlayTime: number;
-        averageCompletionRate: number;
-        topMovements: Array<{ movement: string; videoCount: number; avgScore: number }>;
-        recentActivity: Array<{ date: string; uploads: number; views: number }>;
-    }> {
-        const dateFrom = new Date();
-        dateFrom.setDate(dateFrom.getDate() - days);
-
-        // Get PRs with videos in the specified period
-        const prsWithVideos = await db
-            .select({
-                pr: athletePrs,
-                movement: movements
-            })
-            .from(athletePrs)
-            .innerJoin(movements, eq(athletePrs.movementId, movements.id))
-            .where(and(
-                eq(athletePrs.boxId, boxId),
-                sql`${athletePrs.gumletAssetId} IS NOT NULL`,
-                sql`${athletePrs.achievedAt} >= ${dateFrom}`
-            ));
-
-        // Aggregate video analytics (mock implementation)
-        const totalVideos = prsWithVideos.length;
-        const mockStats = {
-            totalViews: totalVideos * 8, // Average 8 views per video
-            totalPlayTime: totalVideos * 120, // Average 2 minutes per video
-            averageCompletionRate: 75 // 75% average completion rate
-        };
-
-        // Top movements by video count
-        const movementStats = prsWithVideos.reduce((acc, { movement }) => {
-            const key = movement.name;
-            if (!acc[key]) {
-                acc[key] = { count: 0, totalScore: 0 };
-            }
-            acc[key].count++;
-            acc[key].totalScore += Math.random() * 30 + 70; // Mock technical score
-            return acc;
-        }, {} as Record<string, { count: number; totalScore: number }>);
-
-        const topMovements = Object.entries(movementStats)
-            .map(([movement, stats]) => ({
-                movement,
-                videoCount: stats.count,
-                avgScore: Math.round(stats.totalScore / stats.count)
-            }))
-            .sort((a, b) => b.videoCount - a.videoCount)
-            .slice(0, 5);
-
-        // Recent activity (mock implementation)
-        const recentActivity = Array.from({ length: 7 }, (_, i) => {
-            const date = new Date();
-            date.setDate(date.getDate() - i);
-            return {
-                date: date.toISOString().split('T')[0],
-                uploads: Math.floor(Math.random() * 5),
-                views: Math.floor(Math.random() * 25)
-            };
-        });
-
-        return {
-            totalVideos,
-            totalViews: mockStats.totalViews,
-            totalPlayTime: mockStats.totalPlayTime,
-            averageCompletionRate: mockStats.averageCompletionRate,
-            topMovements,
-            recentActivity
-        };
-    }
-
-    /**
-     * Batch process video status updates from webhooks
-     */
-    static async processVideoWebhookBatch(webhooks: Array<{
-        asset_id: string;
-        status: string;
-        progress?: number;
-        webhook_id?: string;
-        metadata?: any;
-    }>): Promise<{
-        processed: number;
-        failed: number;
-        errors: string[];
-    }> {
-        const results = await Promise.allSettled(
-            webhooks.map(webhook => this.processGumletWebhook(webhook))
-        );
-
-        const processed = results.filter(r => r.status === 'fulfilled').length;
-        const failed = results.filter(r => r.status === 'rejected').length;
-        const errors = results
-            .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
-            .map(r => r.reason.message);
-
-        return { processed, failed, errors };
-    }
-
-    /**
-     * Get video consent status for a PR
-     */
-    static async getVideoConsentStatus(prId: string): Promise<{
-        hasConsent: boolean;
-        consentTypes: string[];
-        givenAt?: Date;
-        canView: boolean;
-        canShare: boolean;
-        isPublic: boolean;
-    }> {
-        const consent = await db
-            .select()
-            .from(videoConsents)
-            .where(and(
-                eq(videoConsents.prId, prId),
-                sql`${videoConsents.revokedAt} IS NULL`
-            ))
-            .limit(1);
-
-        if (!consent.length) {
-            return {
-                hasConsent: false,
-                consentTypes: [],
-                canView: false,
-                canShare: false,
-                isPublic: false
-            };
-        }
-
-        const consentTypes = consent[0].consentTypes;
-
-        return {
-            hasConsent: true,
-            consentTypes,
-            givenAt: consent[0].givenAt,
-            canView: consentTypes.includes('coaching') || consentTypes.includes('box_visibility'),
-            canShare: consentTypes.includes('box_visibility'),
-            isPublic: consentTypes.includes('public')
-        };
-    }
-
-    /**
-     * Create video highlight reel from multiple PRs
-     */
-    static async createHighlightReel(
-        boxId: string,
-        athleteId: string,
-        prIds: string[],
-        options: {
-            title?: string;
-            duration?: number;
-            includeComparison?: boolean;
-            musicTrack?: string;
-        } = {}
-    ): Promise<{
-        gumletAssetId: string;
-        processingStatus: string;
-        estimatedCompletion: Date;
-    }> {
-        // This would integrate with a video editing service or Gumlet's video composition features
-        // For now, we'll create a placeholder implementation
-
-        const highlightAsset = await GumletService.createAssetForUpload({
-            title: options.title || `${new Date().getFullYear()} Highlight Reel`,
-            tags: ['highlight', 'compilation', 'progress'],
-            format: 'ABR',
-            metadata: {
-                type: 'highlight_reel',
-                sourceVideos: prIds,
-                boxId,
-                athleteId,
-                createdAt: new Date().toISOString()
-            }
-        });
-
-        // Log the creation for tracking
-        await db.insert(videoProcessingEvents).values({
-            prId: prIds[0], // Use first PR as reference
-            gumletAssetId: highlightAsset.asset_id,
-            eventType: 'highlight_creation',
-            status: 'processing',
-            progress: 0,
-            metadata: {
-                type: 'highlight_reel',
-                sourcePRs: prIds,
-                options
-            }
-        });
-
-        const estimatedCompletion = new Date();
-        estimatedCompletion.setMinutes(estimatedCompletion.getMinutes() + 15); // Estimate 15 minutes
-
-        return {
-            gumletAssetId: highlightAsset.asset_id,
-            processingStatus: 'processing',
-            estimatedCompletion
-        };
-    }
-
-    /**
-     * Process video webhook from Gumlet
-     */
     static async processGumletWebhook(webhookData: {
         asset_id: string;
         status: string;
@@ -631,18 +845,6 @@ export class AthleteVideoService {
             })
             .where(eq(athletePrs.gumletAssetId, webhookData.asset_id));
 
-        // Log processing event
-        await db
-            .insert(videoProcessingEvents)
-            .values({
-                prId: sql`(SELECT id FROM ${athletePrs} WHERE gumlet_asset_id = ${webhookData.asset_id} LIMIT 1)`,
-                gumletAssetId: webhookData.asset_id,
-                eventType: 'status_update',
-                status: webhookData.status,
-                progress: webhookData.progress,
-                metadata: webhookData,
-            });
-
         // Mark webhook as processed
         await db
             .update(gumletWebhookEvents)
@@ -655,9 +857,6 @@ export class AthleteVideoService {
         return webhookEvent;
     }
 
-    /**
-     * Map Gumlet status to our enum values
-     */
     static mapGumletStatusToEnum(gumletStatus: string) {
         const statusMap: Record<string, any> = {
             'upload-pending': 'upload_pending',

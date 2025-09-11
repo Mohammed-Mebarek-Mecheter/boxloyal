@@ -10,9 +10,32 @@ import {
     wodAttendance,
     wodFeedback
 } from "@/db/schema";
-import type { AthleteProfileData } from "@/lib/services/athlete/athlete-service";
 import { db } from "@/db";
 import { and, avg, count, eq, gte, lte, sql } from "drizzle-orm";
+
+export interface AthleteProfileData {
+    profile: typeof boxMemberships.$inferSelect;
+    recentPrs: Array<{
+        pr: typeof athletePrs.$inferSelect;
+        movement: typeof movements.$inferSelect;
+    }>;
+    recentBenchmarks: Array<{
+        benchmark: typeof athleteBenchmarks.$inferSelect;
+        benchmarkWod: typeof benchmarkWods.$inferSelect;
+    }>;
+    recentActivity: typeof athleteWellnessCheckins.$inferSelect[];
+    badges: typeof athleteBadges.$inferSelect[];
+    stats: {
+        checkinStreak: number;
+        totalCheckins: number;
+        longestStreak: number;
+        memberSince: Date;
+        totalPrs: number;
+        totalBenchmarks: number;
+        attendanceRate: number;
+        avgWellnessScore: number;
+    };
+}
 
 // Import interfaces for service dependencies
 interface IAthletePRService {

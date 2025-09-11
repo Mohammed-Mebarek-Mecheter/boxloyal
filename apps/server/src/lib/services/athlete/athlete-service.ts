@@ -1,4 +1,4 @@
-﻿// lib/services/athlete-service.ts - Enhanced version aligned with new schema
+﻿// lib/services/athlete-service.ts
 import {
     athletePrs,
     athleteWellnessCheckins,
@@ -70,9 +70,12 @@ export class AthleteService {
     static getAthleteStats = AthleteCoreService.getAthleteStats;
     static updateCheckinStreak = AthleteCoreService.updateCheckinStreak;
 
-    // PR service methods
+    // PR service methods (Updated with new methods)
     static logPr = AthletePRService.logPr;
     static getRecentPRs = AthletePRService.getRecentPRs;
+    static getVideoVerifiedPRs = AthletePRService.getVideoVerifiedPRs;
+    static getPRTimeline = AthletePRService.getPRTimeline;
+    static getMonthlyVideoStats = AthletePRService.getMonthlyVideoStats;
 
     // Benchmark service methods
     static logBenchmarkResult = AthleteBenchmarkService.logBenchmarkResult;
@@ -83,23 +86,30 @@ export class AthleteService {
     static submitWellnessCheckin = AthleteWellnessService.submitWellnessCheckin;
     static submitWodFeedback = AthleteWellnessService.submitWodFeedback;
 
-    // Badge service methods
+    // Badge service methods (Updated with new methods)
     static getAthleteBadges = AthleteBadgeService.getAthleteBadges;
     static awardBadge = AthleteBadgeService.awardBadge;
+    static checkAndAwardVideoBadges = AthleteBadgeService.checkAndAwardVideoBadges;
+    static getVideoStats = AthleteBadgeService.getVideoStats;
+    static getBadgeProgress = AthleteBadgeService.getBadgeProgress;
+    static getVideoLeaderboard = AthleteBadgeService.getVideoLeaderboard;
+    static getUpcomingBadgeOpportunities = AthleteBadgeService.getUpcomingBadgeOpportunities;
+    static celebrateNewBadges = AthleteBadgeService.celebrateNewBadges;
+    static getBadgeCollection = AthleteBadgeService.getBadgeCollection;
 
-    // Video service methods
+    // Video service methods (Updated with new methods)
     static initializePRVideo = AthleteVideoService.initializePRVideo;
     static completePRWithVideo = AthleteVideoService.completePRWithVideo;
     static getVideoStatus = AthleteVideoService.getVideoStatus;
-    static getVideoAnalytics = AthleteVideoService.getVideoAnalytics;
-    static updateVideoConsent = AthleteVideoService.updateVideoConsent;
-    static getAthleteVideoHistory = AthleteVideoService.getAthleteVideoHistory;
-    static getBoxVideoStats = AthleteVideoService.getBoxVideoStats;
-    static processVideoWebhookBatch = AthleteVideoService.processVideoWebhookBatch;
-    static getVideoConsentStatus = AthleteVideoService.getVideoConsentStatus;
-    static createHighlightReel = AthleteVideoService.createHighlightReel;
     static processGumletWebhook = AthleteVideoService.processGumletWebhook;
     static mapGumletStatusToEnum = AthleteVideoService.mapGumletStatusToEnum;
+    static addCoachFeedback = AthleteVideoService.addCoachFeedback;
+    static getCoachFeedback = AthleteVideoService.getCoachFeedback;
+    static shareToBoxFeed = AthleteVideoService.shareToBoxFeed;
+    static getBoxSocialFeed = AthleteVideoService.getBoxSocialFeed;
+    static getVideoEngagementMetrics = AthleteVideoService.getVideoEngagementMetrics;
+    static getAthleteVideoJourney = AthleteVideoService.getAthleteVideoJourney;
+    static getCoachFeedbackSummary = AthleteVideoService.getCoachFeedbackSummary;
 
     // Attendance service methods
     static recordAttendance = AthleteAttendanceService.recordAttendance;

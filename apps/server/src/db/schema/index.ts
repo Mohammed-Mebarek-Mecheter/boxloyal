@@ -4,6 +4,7 @@ export * from "./core";
 export * from "./athletes";
 export * from "./analytics";
 export * from "./billing";
+export * from "./videos";
 
 // Re-export all tables for easy importing
 import * as auth from "./auth";
@@ -11,6 +12,7 @@ import * as core from "./core";
 import * as athletes from "./athletes";
 import * as analytics from "./analytics";
 import * as billing from "./billing";
+import * as videos from "./videos";
 
 export const schema = {
     ...auth,
@@ -18,6 +20,7 @@ export const schema = {
     ...athletes,
     ...analytics,
     ...billing,
+    ...videos
 };
 
 // Type helpers for common queries - Enhanced with new tables
