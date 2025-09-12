@@ -13,9 +13,9 @@ declare namespace Cloudflare {
         GOOGLE_CLIENT_SECRET: string;
         LINKEDIN_CLIENT_ID: string;
         LINKEDIN_CLIENT_SECRET: string;
-        CORS_ORIGIN:"http://localhost:3001",
-        BETTER_AUTH_SECRET:"dwupTWYO5pkk4Ym08VFdLbwtqzztR777",
-        BETTER_AUTH_URL:"http://localhost:3000",
+        CORS_ORIGIN: string;
+        BETTER_AUTH_SECRET: string;
+        BETTER_AUTH_URL: string;
         POLAR_SEED_PRODUCT_ID: string;
         POLAR_SEED_ANNUAL_PRODUCT_ID: string;
         POLAR_GROW_PRODUCT_ID: string;
