@@ -6,8 +6,9 @@ import { env } from "cloudflare:workers";
 import { admin } from "better-auth/plugins/admin";
 import { polar, checkout, portal, usage, webhooks } from "@polar-sh/better-auth";
 import { Polar } from "@polar-sh/sdk";
-import {boxStatusEnum, schema, subscriptionTierEnum} from "@/db/schema";
 import { eq } from "drizzle-orm";
+import {boxStatusEnum, subscriptionTierEnum} from "@/db/schema/enums";
+import {schema} from "@/db/schema";
 
 // Helper functions to ensure type safety
 function toSubscriptionTier(tier: string): typeof subscriptionTierEnum.enumValues[number] {
