@@ -687,7 +687,7 @@ export class AnalyticsService {
             .select()
             .from(mvCoachPerformance)
             .where(eq(mvCoachPerformance.boxId, boxId))
-            .orderBy(desc(mvCoachPerformance.successfulInterventions));
+            .orderBy(desc(mvCoachPerformance.interventionsCompleted));
     }
 
     /**
@@ -1099,7 +1099,7 @@ export class AnalyticsService {
             avgStress: item.avgStress ? parseFloat(item.avgStress) : 0,
             avgMotivation: item.avgMotivation ? parseFloat(item.avgMotivation) : 0,
             avgReadiness: item.avgReadiness ? parseFloat(item.avgReadiness) : 0,
-            checkinCount: item.checkinCount || 0
+            checkinCount: item.totalCheckins || 0
         }));
     }
 
