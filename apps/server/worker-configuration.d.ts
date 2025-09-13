@@ -24,6 +24,7 @@ declare namespace Cloudflare {
         POLAR_SCALE_ANNUAL_PRODUCT_ID: string;
         POLAR_WEBHOOK_SECRET: string;
         APP_VERSION: string;
+        LOG_LEVEL: "debug" | "info" | "warn" | "error" | string;
     }
 }
 interface CloudflareBindings extends Cloudflare.Env {}

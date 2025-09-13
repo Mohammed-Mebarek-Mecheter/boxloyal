@@ -1,106 +1,98 @@
 {
-  "name": "boxloyal-server",
-  "main": "src/index.ts",
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "boxloyal-cron",
+  "main": "src/workers/cron.ts",
   "compatibility_date": "2025-06-15",
   "compatibility_flags": ["nodejs_compat"],
-  "vars": {
-    "NODE_ENV": "production"
-    // Add public environment variables here
-    // Example: "CORS_ORIGIN": "https://your-domain.com"
-  },
-  // For sensitive data, use:
-  // wrangler secret put SECRET_NAME
-  // Don't add secrets to "vars" - they're visible in the dashboard!
 
-  // Cron triggers for automated billing and maintenance tasks
+  "vars": {
+    "NODE_ENV": "production",
+    "LOG_LEVEL": "info",
+    "SERVICE_VERSION": "1.0.0",
+    "CRON_WORKER_NAME": "boxloyal-cron"
+  },
+
   "triggers": {
     "crons": [
-      "0 2 1 * *",    // Monthly overage billing (1st day of month, 2 AM UTC)
-      "0 1 * * *",    // Daily grace period checks (1 AM UTC)
-      "0 3 * * 0",    // Weekly maintenance (Sunday 3 AM UTC)
-      "0 4 * * *",    // Daily sync check (4 AM UTC)
-      "*/15 * * * *"  // Retry failed billing events (every 15 minutes)
+      "0 2 1 * *",
+      "0 1 * * *",
+      "0 3 * * 0",
+      "0 4 * * *",
+      "*/15 * * * *",
+      "0 5 * * *",
+      "0 6 * * *"
     ]
   },
 
-  // Environment-specific configurations
+  "build": {
+    "command": "pnpm run build:cron"
+  },
+
+  "limits": {
+    "cpu_ms": 30000
+  },
+
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.01
+  },
+
+  "placement": {
+    "mode": "smart"
+  },
+
   "env": {
     "development": {
+      "name": "boxloyal-cron-dev",
       "vars": {
         "NODE_ENV": "development",
-        "POLAR_ENVIRONMENT": "sandbox"
+        "LOG_LEVEL": "debug",
+        "POLAR_ENVIRONMENT": "sandbox",
+        "SERVICE_VERSION": "dev"
       },
       "triggers": {
         "crons": [
-          "*/30 * * * *"  // More frequent testing in dev (every 30 minutes)
+          "0 2 * * *",
+          "*/30 * * * *"
         ]
+      },
+      "limits": {
+        "cpu_ms": 10000
+      },
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 0.1
       }
     },
     "staging": {
+      "name": "boxloyal-cron-staging",
       "vars": {
         "NODE_ENV": "staging",
-        "POLAR_ENVIRONMENT": "sandbox"
+        "LOG_LEVEL": "info",
+        "POLAR_ENVIRONMENT": "sandbox",
+        "SERVICE_VERSION": "staging"
       },
       "triggers": {
         "crons": [
-          "0 3 1 * *",    // Monthly billing at 3 AM (offset from prod)
-          "0 2 * * *",    // Daily grace checks at 2 AM
-          "0 4 * * 1",    // Weekly maintenance on Monday
-          "0 5 * * *",    // Daily sync at 5 AM
-          "*/30 * * * *"  // Retry failed events every 30 minutes
+          "0 3 1 * *",
+          "0 2 * * *",
+          "0 4 * * 1",
+          "0 5 * * *",
+          "*/30 * * * *",
+          "0 6 * * *",
+          "0 7 * * *"
         ]
+      },
+      "limits": {
+        "cpu_ms": 25000
+      },
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 0.05
+      },
+      "placement": {
+        "mode": "smart"
       }
     }
-  },
-
-  // Resource limits and performance
-  "limits": {
-    "cpu_ms": 50000  // Increase CPU time for cron jobs processing large datasets
-  },
-
-  // Service bindings (if you need them)
-  // "services": [
-  //   {
-  //     "binding": "ANALYTICS_SERVICE",
-  //     "service": "boxloyal-analytics"
-  //   }
-  // ],
-
-  // KV namespaces (if you need caching)
-  // "kv_namespaces": [
-  //   {
-  //     "binding": "CACHE",
-  //     "id": "your-kv-namespace-id",
-  //     "preview_id": "your-preview-kv-namespace-id"
-  //   }
-  // ],
-
-  // Durable Objects (if you need them for more complex state management)
-  // "durable_objects": {
-  //   "bindings": [
-  //     {
-  //       "name": "BILLING_PROCESSOR",
-  //       "class_name": "BillingProcessor"
-  //     }
-  //   ]
-  // },
-
-  // Routes (if deploying to a custom domain)
-  // "routes": [
-  //   {
-  //     "pattern": "api.boxloyal.com/*",
-  //     "zone_name": "boxloyal.com"
-  //   }
-  // ],
-
-  // Build configuration
-  "build": {
-    "command": "npm run build"
-  },
-
-  // Observability
-  "logpush": false,  // Set to true if you want to push logs to external service
-  "tail_consumers": [
-    // Add tail consumers for real-time log streaming if needed
-  ]
+  }
 }

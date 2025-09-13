@@ -14,6 +14,8 @@ export type UsageEventType =
     | "athlete_added" | "athlete_removed" | "checkin_logged" | "pr_logged"
     | "wod_completed" | "coach_added" | "coach_removed" | "subscription_created"
     | "subscription_canceled" | "subscription_reactivated" | "grace_period_triggered"
+    | "trial_ending"
+    | "daily_usage_aggregation"
     | "plan_upgraded" | "plan_downgraded" | "overage_billed" | "payment_failed"
     | "payment_received" | "grace_period_resolved";
 

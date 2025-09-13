@@ -1,4 +1,4 @@
-// lib/auth.ts
+// lib/auth.ts - Simplified to focus on auth and delegation
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { db } from "@/db";
@@ -6,45 +6,8 @@ import { env } from "cloudflare:workers";
 import { admin } from "better-auth/plugins/admin";
 import { polar, checkout, portal, usage, webhooks } from "@polar-sh/better-auth";
 import { Polar } from "@polar-sh/sdk";
-import { eq } from "drizzle-orm";
-import {boxStatusEnum, subscriptionTierEnum} from "@/db/schema/enums";
-import {schema} from "@/db/schema";
-
-// Helper functions to ensure type safety
-function toSubscriptionTier(tier: string): typeof subscriptionTierEnum.enumValues[number] {
-    if (["seed", "grow", "scale"].includes(tier)) {
-        return tier as typeof subscriptionTierEnum.enumValues[number];
-    }
-    return "seed"; // default fallback
-}
-
-function toBoxStatus(status: string): typeof boxStatusEnum.enumValues[number] {
-    if (["active", "suspended", "trial_expired"].includes(status)) {
-        return status as typeof boxStatusEnum.enumValues[number];
-    }
-    return "active"; // default fallback
-}
-
-// --- Constants ---
-// Map Polar product IDs to internal tiers (consider making this configurable or derived from DB)
-const PRODUCT_ID_TO_TIER_MAP: Record<string, string> = {
-    [env.POLAR_SEED_PRODUCT_ID]: "seed",
-    [env.POLAR_SEED_ANNUAL_PRODUCT_ID]: "seed",
-    [env.POLAR_GROW_PRODUCT_ID]: "grow",
-    [env.POLAR_GROW_ANNUAL_PRODUCT_ID]: "grow",
-    [env.POLAR_SCALE_PRODUCT_ID]: "scale",
-    [env.POLAR_SCALE_ANNUAL_PRODUCT_ID]: "scale",
-};
-// Map Polar subscription status to internal box status (align with your enums)
-const POLAR_STATUS_TO_BOX_STATUS: Record<string, string> = {
-    "active": "active",
-    "trialing": "active", // During trial, box is active
-    "past_due": "active", // Grace period, box is active
-    "unpaid": "suspended",
-    "canceled": "suspended", // After paid period ends if canceled
-    "incomplete": "suspended", // Failed setup
-    "incomplete_expired": "suspended", // Expired setup
-};
+import { schema } from "@/db/schema";
+import { WebhookHandlerService } from "@/lib/services/billing/webhook-handler-service";
 
 // Initialize Polar client
 const polarClient = new Polar({
@@ -99,20 +62,16 @@ const authConfig: BetterAuthOptions = {
         admin({
             defaultRole: "user",
             adminRoles: ["admin", "owner"],
-            impersonationSessionDuration: 60 * 60, // 1 hour
+            impersonationSessionDuration: 60 * 60,
             defaultBanReason: "Terms of service violation",
-            defaultBanExpiresIn: 60 * 60 * 24 * 7, // 1 week
+            defaultBanExpiresIn: 60 * 60 * 24 * 7,
             bannedUserMessage: "Your account has been temporarily suspended. Please contact support if you believe this is an error.",
         }),
         polar({
             client: polarClient,
             createCustomerOnSignUp: true,
             getCustomerCreateParams: async ({ user }, request) => {
-                // Find the box associated with this user during signup (likely owner)
-                // This assumes user metadata or request context holds box info
-                // You might need to refine this based on your signup flow
-                const boxId = (user as any).metadata?.boxId || request?.headers?.get('x-box-id'); // Example: pass box ID via header or metadata
-
+                const boxId = (user as any).metadata?.boxId || request?.headers?.get('x-box-id');
                 return {
                     email: user.email,
                     name: user.name || user.email.split('@')[0],
@@ -120,7 +79,7 @@ const authConfig: BetterAuthOptions = {
                         created_via: "boxloyal_signup",
                         user_id: user.id,
                         signup_timestamp: new Date().toISOString(),
-                        box_id: boxId || null, // Associate with box if possible
+                        box_id: boxId || null,
                     },
                 };
             },
@@ -141,64 +100,96 @@ const authConfig: BetterAuthOptions = {
                 usage(),
                 webhooks({
                     secret: env.POLAR_WEBHOOK_SECRET,
-                    // --- Enhanced Webhook Handlers ---
+                    // Simplified webhook handlers that delegate to services
                     onCustomerStateChanged: async (payload) => {
                         try {
-                            console.log("Customer state changed:", payload);
-                            await updateCustomerProfile(payload.data);
+                            await WebhookHandlerService.handleWebhookEvent({
+                                type: 'customer.updated',
+                                id: `customer_${Date.now()}`,
+                                data: payload.data,
+                                metadata: { source: 'polar_adapter' }
+                            });
                         } catch (error) {
                             console.error("Error handling customer state change:", error);
+                            throw error; // Let Better Auth handle retry logic
                         }
                     },
                     onOrderPaid: async (payload) => {
                         try {
-                            console.log("Order paid:", payload);
-                            await handleOrderPaid(payload.data);
+                            await WebhookHandlerService.handleWebhookEvent({
+                                type: 'invoice.paid',
+                                id: `order_${payload.data.id}`,
+                                data: payload.data,
+                                metadata: { source: 'polar_adapter' }
+                            });
                         } catch (error) {
                             console.error("Error handling order paid:", error);
+                            throw error;
                         }
                     },
-                    // --- Key Subscription Lifecycle Events ---
                     onSubscriptionCreated: async (payload) => {
                         try {
-                            console.log("Subscription created:", payload);
-                            // This might be for trials or immediate starts
-                            // Let onSubscriptionActive handle the main logic for activation
+                            await WebhookHandlerService.handleWebhookEvent({
+                                type: 'subscription.created',
+                                id: `sub_created_${payload.data.id}`,
+                                data: payload.data,
+                                metadata: { source: 'polar_adapter' }
+                            });
                         } catch (error) {
                             console.error("Error handling subscription created:", error);
+                            throw error;
                         }
                     },
                     onSubscriptionActive: async (payload) => {
                         try {
-                            console.log("Subscription active:", payload);
-                            await activateSubscription(payload.data);
+                            await WebhookHandlerService.handleWebhookEvent({
+                                type: 'subscription.updated',
+                                id: `sub_active_${payload.data.id}`,
+                                data: payload.data,
+                                metadata: { source: 'polar_adapter', status: 'active' }
+                            });
                         } catch (error) {
                             console.error("Error handling subscription activation:", error);
+                            throw error;
                         }
                     },
                     onSubscriptionUpdated: async (payload) => {
                         try {
-                            console.log("Subscription updated:", payload);
-                            await updateSubscription(payload.data);
+                            await WebhookHandlerService.handleWebhookEvent({
+                                type: 'subscription.updated',
+                                id: `sub_updated_${payload.data.id}`,
+                                data: payload.data,
+                                metadata: { source: 'polar_adapter' }
+                            });
                         } catch (error) {
                             console.error("Error handling subscription update:", error);
+                            throw error;
                         }
                     },
                     onSubscriptionCanceled: async (payload) => {
                         try {
-                            console.log("Subscription canceled:", payload);
-                            await handleSubscriptionCancellation(payload.data);
+                            await WebhookHandlerService.handleWebhookEvent({
+                                type: 'subscription.canceled',
+                                id: `sub_canceled_${payload.data.id}`,
+                                data: payload.data,
+                                metadata: { source: 'polar_adapter' }
+                            });
                         } catch (error) {
                             console.error("Error handling subscription cancellation:", error);
+                            throw error;
                         }
                     },
-                    // --- Critical: Revoked means immediate access loss ---
                     onSubscriptionRevoked: async (payload) => {
                         try {
-                            console.log("Subscription revoked:", payload);
-                            await revokeSubscription(payload.data);
+                            await WebhookHandlerService.handleWebhookEvent({
+                                type: 'subscription.revoked',
+                                id: `sub_revoked_${payload.data.id}`,
+                                data: payload.data,
+                                metadata: { source: 'polar_adapter' }
+                            });
                         } catch (error) {
                             console.error("Error handling subscription revocation:", error);
+                            throw error;
                         }
                     },
                 }),
@@ -206,343 +197,5 @@ const authConfig: BetterAuthOptions = {
         })
     ],
 };
-
-// --- Helper Functions for Webhook Handlers ---
-
-async function getCustomerProfileByPolarId(polarCustomerId: string) {
-    return await db.query.customerProfiles.findFirst({
-        where: eq(schema.customerProfiles.polarCustomerId, polarCustomerId)
-    });
-}
-async function getSubscriptionId(polarSubscriptionId: string): Promise<string | null> {
-    const subscription = await db.query.subscriptions.findFirst({
-        where: eq(schema.subscriptions.polarSubscriptionId, polarSubscriptionId)
-    });
-    return subscription?.id || null;
-}
-
-// --- Core Logic Functions ---
-
-async function updateCustomerProfile(customerState: any) {
-    const customer = customerState.customer;
-    // Assume box_id is in metadata or find another way to link customer to box
-    const boxId = customer.metadata?.box_id;
-    if (!boxId) {
-        console.warn("Cannot link customer to box without box_id in metadata", customer.id);
-        return;
-    }
-
-    await db.insert(schema.customerProfiles).values({
-        polarCustomerId: customer.id,
-        boxId: boxId,
-        email: customer.email,
-        name: customer.name || customer.email.split('@')[0],
-        billingAddress: customer.billing_address ? JSON.stringify(customer.billing_address) : null, // Ensure JSON if needed
-        taxId: customer.tax_id,
-        updatedAt: new Date(),
-    }).onConflictDoUpdate({
-        target: schema.customerProfiles.polarCustomerId,
-        set: {
-            email: customer.email,
-            name: customer.name,
-            billingAddress: customer.billing_address ? JSON.stringify(customer.billing_address) : null,
-            taxId: customer.tax_id,
-            updatedAt: new Date(),
-        }
-    });
-}
-
-async function handleOrderPaid(order: any) {
-    const customerProfile = await getCustomerProfileByPolarId(order.customerId);
-    if (!customerProfile) {
-        console.warn("Customer profile not found for paid order", order.id);
-        return;
-    }
-
-    const subscriptionId = order.subscription_id ? await getSubscriptionId(order.subscription_id) : null;
-    const productId = order.product_id; // Default fallback
-
-    // Determine order type based on billing reason or other logic
-    // Example: Assume subscription orders are 'subscription', one-time purchases are 'addon' or 'onboarding'
-    let orderType = 'addon'; // Default
-    if (order.billing_reason === "subscription_create" || order.billing_reason === "subscription_cycle") {
-        orderType = 'subscription';
-    }
-    // Add more logic here if needed to differentiate order types
-
-    // Insert order record
-    await db.insert(schema.orders).values({
-        polarOrderId: order.id,
-        boxId: customerProfile.boxId,
-        customerProfileId: customerProfile.id,
-        subscriptionId: subscriptionId,
-        polarProductId: productId,
-        // --- Added Required Fields ---
-        orderType: orderType, // Provide the required 'orderType'
-        description: order.description || `Order ${order.id}`, // Provide a default description if needed
-        // --- End Added Fields ---
-        status: "paid",
-        amount: order.total_amount,
-        currency: order.currency,
-        paidAt: new Date(order.paid_at),
-        metadata: order.metadata ? JSON.stringify(order.metadata) : null,
-        updatedAt: new Date(),
-    }).onConflictDoUpdate({
-        target: schema.orders.polarOrderId,
-        set: {
-            status: "paid",
-            paidAt: new Date(order.paid_at),
-            updatedAt: new Date(),
-        }
-    });
-
-    // If this is the initial subscription order, ensure the subscription is activated
-    // This might happen if the subscription webhook arrives slightly after the order webhook
-    if (order.billing_reason === "subscription_create" && subscriptionId) {
-        const subscription = await db.query.subscriptions.findFirst({
-            where: eq(schema.subscriptions.id, subscriptionId)
-        });
-        if (subscription && subscription.status !== 'active') {
-            // Fetch latest subscription data from Polar if needed, or just activate based on order
-            // For simplicity, assume activation logic handles this correctly
-            console.log("Triggering activation for subscription linked to paid order", subscriptionId);
-        }
-    }
-    // For one-time purchases, you might handle differently if needed
-}
-
-async function activateSubscription(subscriptionData: any) {
-    const customerProfile = await getCustomerProfileByPolarId(subscriptionData.customerId);
-    if (!customerProfile) {
-        console.warn("Customer profile not found for subscription activation", subscriptionData.id);
-        return;
-    }
-
-    const productId = subscriptionData.product_id;
-    const tier = PRODUCT_ID_TO_TIER_MAP[productId];
-    const plan = tier ? await db.query.subscriptionPlans.findFirst({ where: eq(schema.subscriptionPlans.tier, tier) }) : null;
-
-    if (!plan) {
-        console.error("Subscription plan not found for tier:", tier, "Product ID:", productId);
-        return; // Or handle error appropriately
-    }
-
-    // Insert or Update Subscription Record
-    await db.insert(schema.subscriptions).values({
-        polarSubscriptionId: subscriptionData.id,
-        boxId: customerProfile.boxId,
-        customerProfileId: customerProfile.id,
-        polarProductId: productId,
-        // --- Added Required Fields ---
-        planId: plan.id, // Reference the plan ID (assuming this is correct and plan.id exists)
-        planVersion: plan.version ?? 1, // Provide 'planVersion', defaulting to 1 if not in plan object
-        // --- End Added Fields ---
-        status: subscriptionData.status,
-        currentPeriodStart: new Date(subscriptionData.current_period_start * 1000), // Assuming Polar uses Unix timestamps
-        currentPeriodEnd: new Date(subscriptionData.current_period_end * 1000),
-        cancelAtPeriodEnd: subscriptionData.cancel_at_period_end || false,
-        canceledAt: subscriptionData.canceled_at ? new Date(subscriptionData.canceled_at * 1000) : null,
-        currency: subscriptionData.currency,
-        amount: subscriptionData.amount,
-        interval: subscriptionData.recurring_interval,
-        metadata: subscriptionData.metadata ? JSON.stringify(subscriptionData.metadata) : null,
-        // planId: plan.id, // Moved up and marked as added
-        lastSyncedAt: new Date(),
-        updatedAt: new Date(),
-    }).onConflictDoUpdate({
-        target: schema.subscriptions.polarSubscriptionId, // Assuming polarSubscriptionId is the correct unique identifier
-        set: {
-            status: subscriptionData.status,
-            currentPeriodStart: new Date(subscriptionData.current_period_start * 1000),
-            currentPeriodEnd: new Date(subscriptionData.current_period_end * 1000),
-            cancelAtPeriodEnd: subscriptionData.cancel_at_period_end || false,
-            canceledAt: subscriptionData.canceled_at ? new Date(subscriptionData.canceled_at * 1000) : null,
-            amount: subscriptionData.amount,
-            planId: plan.id, // Update plan ID
-            planVersion: plan.version ?? 1, // Update plan version
-            lastSyncedAt: new Date(),
-            updatedAt: new Date(),
-        }
-    });
-
-    // --- Update Box Status and Limits ---
-    // Determine the effective start date (trial end or current period start)
-    const effectiveStartDate = subscriptionData.trial_end ?
-        new Date(subscriptionData.trial_end * 1000) :
-        new Date(subscriptionData.current_period_start * 1000);
-
-    const boxStatus = POLAR_STATUS_TO_BOX_STATUS[subscriptionData.status] || "active"; // Default to active if unknown
-
-    await db.update(schema.boxes)
-        .set({
-            subscriptionStatus: subscriptionData.status,
-            subscriptionTier: toSubscriptionTier(tier),
-            subscriptionStartsAt: effectiveStartDate,
-            subscriptionEndsAt: new Date(subscriptionData.current_period_end * 1000),
-            status: toBoxStatus(boxStatus),
-            polarSubscriptionId: subscriptionData.id,
-            updatedAt: new Date(),
-        })
-        .where(eq(schema.boxes.id, customerProfile.boxId));
-}
-
-async function updateSubscription(subscriptionData: any) {
-    // This handles updates like status changes, plan changes, period changes
-    const existingSubscription = await db.query.subscriptions.findFirst({
-        where: eq(schema.subscriptions.polarSubscriptionId, subscriptionData.id)
-    });
-
-    if (!existingSubscription) {
-        console.warn("Subscription not found for update", subscriptionData.id);
-        // Might be a new subscription that arrived out of order, try activate
-        await activateSubscription(subscriptionData);
-        return;
-    }
-
-    const customerProfile = await getCustomerProfileByPolarId(subscriptionData.customerId);
-    if (!customerProfile) {
-        console.warn("Customer profile not found for subscription update", subscriptionData.id);
-        return;
-    }
-
-    const productId = subscriptionData.product_id;
-    let tier = PRODUCT_ID_TO_TIER_MAP[productId];
-    let plan = tier ? await db.query.subscriptionPlans.findFirst({ where: eq(schema.subscriptionPlans.tier, tier) }) : null;
-
-    // If plan changed or tier not found from product ID, try to infer from subscription metadata or existing record
-    if (!plan && existingSubscription.planId) {
-        // Get plan by ID if we have it
-        plan = await db.query.subscriptionPlans.findFirst({ where: eq(schema.subscriptionPlans.id, existingSubscription.planId) });
-        if (plan) {
-            tier = plan.tier;
-        }
-    }
-
-    // Update subscription record
-    await db.update(schema.subscriptions)
-        .set({
-            status: subscriptionData.status,
-            currentPeriodStart: new Date(subscriptionData.current_period_start * 1000),
-            currentPeriodEnd: new Date(subscriptionData.current_period_end * 1000),
-            cancelAtPeriodEnd: subscriptionData.cancel_at_period_end || false,
-            canceledAt: subscriptionData.canceled_at ? new Date(subscriptionData.canceled_at * 1000) : null,
-            amount: subscriptionData.amount,
-            polarProductId: productId,
-            planId: plan?.id || existingSubscription.planId, // Keep existing if not changed/unknown
-            lastSyncedAt: new Date(),
-            updatedAt: new Date(),
-        })
-        .where(eq(schema.subscriptions.polarSubscriptionId, subscriptionData.id));
-
-    // --- Update Box Status ---
-    // Determine the effective start date (should ideally be set once on activation)
-    // For updates, mainly focus on end date and status
-    const boxStatus = POLAR_STATUS_TO_BOX_STATUS[subscriptionData.status] || "active";
-
-    const updateFields: any = {
-        subscriptionStatus: subscriptionData.status,
-        subscriptionEndsAt: new Date(subscriptionData.current_period_end * 1000),
-        status: boxStatus,
-        lastSyncedAt: new Date(),
-        updatedAt: new Date(),
-    };
-
-    if (plan && plan.id !== existingSubscription.planId) {
-        updateFields.subscriptionTier = tier;
-        updateFields.athleteLimit = plan.athleteLimit;
-        updateFields.coachLimit = plan.coachLimit;
-    }
-
-    await db.update(schema.boxes)
-        .set(updateFields)
-        .where(eq(schema.boxes.id, customerProfile.boxId));
-}
-
-async function handleSubscriptionCancellation(subscriptionData: any) {
-    // This is for scheduled or immediate cancellations
-    const existingSubscription = await db.query.subscriptions.findFirst({
-        where: eq(schema.subscriptions.polarSubscriptionId, subscriptionData.id)
-    });
-
-    if (!existingSubscription) {
-        console.warn("Subscription not found for cancellation", subscriptionData.id);
-        return;
-    }
-
-    const customerProfile = await getCustomerProfileByPolarId(subscriptionData.customerId);
-    if (!customerProfile) {
-        console.warn("Customer profile not found for subscription cancellation", subscriptionData.id);
-        return;
-    }
-
-    // Update subscription record
-    await db.update(schema.subscriptions)
-        .set({
-            status: subscriptionData.status, // Should be 'canceled' or 'active' (if scheduled)
-            cancelAtPeriodEnd: subscriptionData.cancel_at_period_end,
-            canceledAt: subscriptionData.canceled_at ? new Date(subscriptionData.canceled_at * 1000) : new Date(), // Record cancellation time
-            lastSyncedAt: new Date(),
-            updatedAt: new Date(),
-        })
-        .where(eq(schema.subscriptions.polarSubscriptionId, subscriptionData.id));
-
-    // --- Update Box Status ---
-    // If immediate cancellation (cancel_at_period_end is false), revoke access now
-    if (!subscriptionData.cancel_at_period_end) {
-        await revokeSubscription(subscriptionData); // Reuse revoke logic for immediate access loss
-    } else {
-        // Scheduled cancellation: Keep box status as 'active' until period end
-        // Update subscriptionEndsAt to the cancellation date if it's sooner than current period end
-        // (This might already be handled by updateSubscription, but let's be explicit)
-        const currentEnd = existingSubscription.currentPeriodEnd.getTime();
-        const cancelEnd = subscriptionData.current_period_end * 1000; // Use current_period_end as cancellation effective date
-        const newEnd = Math.min(currentEnd, cancelEnd);
-
-        await db.update(schema.boxes)
-            .set({
-                subscriptionStatus: subscriptionData.status, // 'canceled'
-                subscriptionEndsAt: new Date(newEnd),
-                updatedAt: new Date(),
-            })
-            .where(eq(schema.boxes.id, customerProfile.boxId));
-    }
-}
-
-async function revokeSubscription(subscriptionData: any) {
-    // Immediate access revocation (canceled immediately, revoked, expired trial, etc.)
-    const existingSubscription = await db.query.subscriptions.findFirst({
-        where: eq(schema.subscriptions.polarSubscriptionId, subscriptionData.id)
-    });
-
-    if (!existingSubscription) {
-        console.warn("Subscription not found for revocation", subscriptionData.id);
-        return;
-    }
-
-    const customerProfile = await getCustomerProfileByPolarId(subscriptionData.customerId);
-    if (!customerProfile) {
-        console.warn("Customer profile not found for subscription revocation", subscriptionData.id);
-        return;
-    }
-
-    // Update subscription record to final state
-    await db.update(schema.subscriptions)
-        .set({
-            status: subscriptionData.status, // 'canceled', 'revoked', 'incomplete_expired', etc.
-            canceledAt: subscriptionData.canceled_at ? new Date(subscriptionData.canceled_at * 1000) : new Date(),
-            lastSyncedAt: new Date(),
-            updatedAt: new Date(),
-        })
-        .where(eq(schema.subscriptions.polarSubscriptionId, subscriptionData.id));
-
-    // --- Update Box to Suspended State ---
-    await db.update(schema.boxes)
-        .set({
-            subscriptionStatus: subscriptionData.status,
-            status: 'suspended', // Critical: Deny access
-            updatedAt: new Date(),
-        })
-        .where(eq(schema.boxes.id, customerProfile.boxId));
-}
 
 export const auth = betterAuth(authConfig) as unknown as ReturnType<typeof betterAuth>;

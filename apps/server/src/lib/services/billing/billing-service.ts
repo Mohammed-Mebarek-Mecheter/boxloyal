@@ -6,27 +6,23 @@ import { PlanChangeService } from "./plan-change-service";
 import { SubscriptionLifecycleService } from "./subscription-lifecycle-service";
 import { BillingDashboardService } from "./billing-dashboard-service";
 import { WebhookHandlerService } from "./webhook-handler-service";
+import { AccessControlService } from "@/lib/middleware/access-control";
 import type {
-    UsageEventType,
-    GracePeriodReason,
-    SubscriptionStatus,
-    PlanChangeRequest,
-    BillingEvent
+    UsageEventType
 } from "./types";
 
 /**
  * Main Billing Service - Orchestrates all billing-related operations
- * This service acts as the main entry point for all billing functionality
+ * This is the primary interface that your application should use for all billing operations
  */
 export class BillingService {
-    // Usage Tracking
+    // Direct service delegates (no changes needed)
     static calculateUsage = UsageTrackingService.calculateUsage;
     static trackEvents = UsageTrackingService.trackEvents;
     static updateBoxUsageCounts = UsageTrackingService.updateBoxUsageCounts;
     static checkLimitsAndTriggerActions = UsageTrackingService.checkLimitsAndTriggerActions;
     static getUsageTrends = UsageTrackingService.getUsageTrends;
 
-    // Grace Periods
     static createGracePeriod = GracePeriodService.createGracePeriod;
     static resolveGracePeriod = GracePeriodService.resolveGracePeriod;
     static getActiveGracePeriods = GracePeriodService.getActiveGracePeriods;
@@ -34,7 +30,6 @@ export class BillingService {
     static resolveGracePeriodsForReasons = GracePeriodService.resolveGracePeriodsForReasons;
     static enableOverageBilling = GracePeriodService.enableOverageBilling;
 
-    // Overage Billing
     static calculateOverageForPeriod = OverageBillingService.calculateOverageForPeriod;
     static createOverageBilling = OverageBillingService.createOverageBilling;
     static createOverageOrder = OverageBillingService.createOverageOrder;
@@ -42,14 +37,12 @@ export class BillingService {
     static processMonthlyOverageBilling = OverageBillingService.processMonthlyOverageBilling;
     static markOverageAsPaid = OverageBillingService.markOverageAsPaid;
 
-    // Plan Changes
     static requestPlanChange = PlanChangeService.requestPlanChange;
     static processPlanChangeRequest = PlanChangeService.processPlanChangeRequest;
     static cancelPlanChangeRequest = PlanChangeService.cancelPlanChangeRequest;
     static getPendingPlanChanges = PlanChangeService.getPendingPlanChanges;
     static getPlanChangeHistory = PlanChangeService.getPlanChangeHistory;
 
-    // Subscription Lifecycle
     static cancelSubscription = SubscriptionLifecycleService.cancelSubscription;
     static reactivateSubscription = SubscriptionLifecycleService.reactivateSubscription;
     static updateSubscriptionStatus = SubscriptionLifecycleService.updateSubscriptionStatus;
@@ -57,7 +50,6 @@ export class BillingService {
     static isInTrialPeriod = SubscriptionLifecycleService.isInTrialPeriod;
     static expireTrialSubscription = SubscriptionLifecycleService.expireTrialSubscription;
 
-    // Dashboard & Analytics
     static getBillingDashboard = BillingDashboardService.getBillingDashboard;
     static getRecentBillingActivity = BillingDashboardService.getRecentBillingActivity;
     static calculateUpcomingBilling = BillingDashboardService.calculateUpcomingBilling;
@@ -65,12 +57,15 @@ export class BillingService {
     static getBillingSummary = BillingDashboardService.getBillingSummary;
     static getUpcomingBillingEvents = BillingDashboardService.getUpcomingBillingEvents;
 
-    // Webhook Handling
     static handleWebhookEvent = WebhookHandlerService.handleWebhookEvent;
     static retryFailedEvents = WebhookHandlerService.retryFailedEvents;
 
+    // Access Control Integration (NEW)
+    static checkBoxAccess = AccessControlService.checkBoxAccess;
+    static checkFeatureAccess = AccessControlService.checkFeatureAccess;
+
     /**
-     * High-level method to handle athlete/coach additions with all checks
+     * Enhanced member addition with proper access gating
      */
     static async handleMemberAddition(
         boxId: string,
@@ -79,8 +74,28 @@ export class BillingService {
         options: {
             entityId?: string;
             metadata?: Record<string, any>;
+            enforceLimit?: boolean;
         } = {}
     ) {
+        const { enforceLimit = true } = options;
+
+        // Check if addition is allowed
+        if (enforceLimit) {
+            const featureCheck = await this.checkFeatureAccess(
+                boxId,
+                memberType === "athlete" ? "add_athlete" : "add_coach"
+            );
+
+            if (!featureCheck.hasAccess) {
+                return {
+                    success: false,
+                    error: featureCheck.reason,
+                    upgradeRequired: featureCheck.upgradeRequired,
+                    billingIssue: featureCheck.billingIssue
+                };
+            }
+        }
+
         // Track the addition event
         const eventType: UsageEventType = memberType === "athlete" ? "athlete_added" : "coach_added";
 
@@ -93,7 +108,7 @@ export class BillingService {
             metadata: options.metadata
         }]);
 
-        // Check limits and trigger any necessary actions (grace periods, overage calculations)
+        // Check limits and trigger any necessary actions
         const usage = await this.checkLimitsAndTriggerActions(boxId, [{ eventType }]);
 
         return {
@@ -137,7 +152,7 @@ export class BillingService {
     }
 
     /**
-     * Comprehensive subscription upgrade flow
+     * Upgrade subscription flow with proper access restoration
      */
     static async upgradeSubscription(
         boxId: string,
@@ -149,45 +164,69 @@ export class BillingService {
             metadata?: Record<string, any>;
         } = {}
     ) {
-        // Create plan change request
-        const planChangeRequest = await this.requestPlanChange(boxId, toPlanId, {
-            requestedByUserId: upgradedByUserId,
-            effectiveDate: options.effectiveDate,
-            prorationType: options.prorationType,
-            metadata: options.metadata
-        });
+        try {
+            // Check current access status
+            const accessCheck = await this.checkBoxAccess(boxId);
 
-        // Process the request immediately for upgrades
-        const result = await this.processPlanChangeRequest(planChangeRequest.id, upgradedByUserId);
+            // Create plan change request
+            const planChangeRequest = await this.requestPlanChange(boxId, toPlanId, {
+                requestedByUserId: upgradedByUserId,
+                effectiveDate: options.effectiveDate,
+                prorationType: options.prorationType,
+                metadata: options.metadata
+            });
 
-        // Resolve any limit-related grace periods
-        const gracePeriodsResolved = await this.resolveGracePeriodsForReasons(
-            boxId,
-            ["athlete_limit_exceeded", "coach_limit_exceeded"],
-            "plan_upgraded",
-            upgradedByUserId
-        );
+            // Process the request immediately for upgrades
+            const result = await this.processPlanChangeRequest(planChangeRequest.id, upgradedByUserId);
 
-        // Track the upgrade
-        await this.trackEvents(boxId, [{
-            eventType: "plan_upgraded",
-            quantity: 1,
-            userId: upgradedByUserId,
-            metadata: {
-                planChangeRequestId: planChangeRequest.id,
-                fromPlanId: planChangeRequest.fromPlanId,
-                toPlanId: planChangeRequest.toPlanId,
-                proratedAmount: result.proratedAmount,
-                gracePeriodsResolved
+            // Resolve any limit-related grace periods
+            const gracePeriodsResolved = await this.resolveGracePeriodsForReasons(
+                boxId,
+                ["athlete_limit_exceeded", "coach_limit_exceeded"],
+                "plan_upgraded",
+                upgradedByUserId
+            );
+
+            // If there were billing issues, try to resolve them
+            if (accessCheck.billingIssue) {
+                await this.resolveGracePeriodsForReasons(
+                    boxId,
+                    ["payment_failed", "billing_issue"],
+                    "plan_upgraded",
+                    upgradedByUserId
+                );
             }
-        }]);
 
-        return {
-            success: true,
-            planChangeRequest,
-            proratedAmount: result.proratedAmount,
-            gracePeriodsResolved
-        };
+            // Track the upgrade
+            await this.trackEvents(boxId, [{
+                eventType: "plan_upgraded",
+                quantity: 1,
+                userId: upgradedByUserId,
+                metadata: {
+                    planChangeRequestId: planChangeRequest.id,
+                    fromPlanId: planChangeRequest.fromPlanId,
+                    toPlanId: planChangeRequest.toPlanId,
+                    proratedAmount: result.proratedAmount,
+                    gracePeriodsResolved,
+                    hadBillingIssue: accessCheck.billingIssue
+                }
+            }]);
+
+            return {
+                success: true,
+                planChangeRequest,
+                proratedAmount: result.proratedAmount,
+                gracePeriodsResolved,
+                accessRestored: accessCheck.billingIssue || !accessCheck.hasAccess
+            };
+
+        } catch (error) {
+            console.error("Error upgrading subscription:", error);
+            return {
+                success: false,
+                error: error instanceof Error ? error.message : "Upgrade failed"
+            };
+        }
     }
 
     /**
@@ -209,24 +248,36 @@ export class BillingService {
     }
 
     /**
-     * Process monthly billing for all boxes
+     * Process all monthly billing operations
      */
     static async processMonthlyBilling() {
         try {
-            console.log("Starting monthly billing process...");
+            console.log("Starting comprehensive monthly billing process...");
 
             // Process overage billing
             const overageResults = await this.processMonthlyOverageBilling();
 
-            // Get upcoming billing events for monitoring
-            const upcomingBilling = await this.getUpcomingBillingEvents(7); // Next 7 days
+            // Check for upcoming expirations
+            const upcomingExpirations = await this.getUpcomingGracePeriodExpirations(7);
 
-            console.log(`Monthly billing completed: ${overageResults.length} subscriptions processed`);
+            // Get upcoming billing events for monitoring
+            const upcomingBilling = await this.getUpcomingBillingEvents(7);
+
+            // Retry any failed webhook events
+            const retryResults = await this.retryFailedEvents();
+
+            console.log(`Monthly billing completed: 
+                - ${overageResults.length} overage billing processed
+                - ${upcomingExpirations.length} upcoming grace period expirations
+                - ${upcomingBilling.length} upcoming billing events
+                - ${retryResults.length} webhook events retried`);
 
             return {
                 success: true,
                 overageResults,
+                upcomingExpirations,
                 upcomingBilling,
+                retryResults,
                 processedAt: new Date()
             };
         } catch (error) {
@@ -236,7 +287,7 @@ export class BillingService {
     }
 
     /**
-     * Health check for billing system
+     * Enhanced health check with detailed status
      */
     static async getBillingHealthCheck() {
         try {
@@ -244,10 +295,10 @@ export class BillingService {
             const failedEvents = await this.retryFailedEvents();
 
             // Get upcoming grace period expirations
-            const upcomingExpirations = await this.getUpcomingGracePeriodExpirations(3); // Next 3 days
+            const upcomingExpirations = await this.getUpcomingGracePeriodExpirations(3);
 
             // Get upcoming billing events
-            const upcomingBilling = await this.getUpcomingBillingEvents(7); // Next 7 days
+            const upcomingBilling = await this.getUpcomingBillingEvents(7);
 
             return {
                 status: "healthy",
