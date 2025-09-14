@@ -10,6 +10,8 @@ import {
 import { eq, and, gte, lte, desc } from "drizzle-orm";
 import type { OverageCalculation } from "./types";
 import { UsageTrackingService } from "./usage-tracking-service";
+// Import the BillingNotificationService
+import { BillingNotificationService } from "@/lib/services/notifications/billing-notifications-service";
 
 export class OverageBillingService {
     // Overage rates (in cents)
@@ -17,6 +19,9 @@ export class OverageBillingService {
         athlete: 100, // $1 per athlete over limit
         coach: 100    // $1 per coach over limit
     };
+
+    // Instantiate the BillingNotificationService
+    private static billingNotificationService = new BillingNotificationService();
 
     /**
      * Calculate overage for a specific billing period
@@ -282,6 +287,22 @@ export class OverageBillingService {
                 if (calculation) {
                     const order = await this.createOverageOrder(calculation);
 
+                    // --- INTEGRATION: Send Overage Charges Notification ---
+                    // This is the key integration point. After creating the overage billing/order,
+                    // we notify the user.
+                    try {
+                        await this.billingNotificationService.sendOverageChargesNotification(
+                            subscription.boxId,
+                            billingPeriodStart,
+                            billingPeriodEnd
+                        );
+                        console.log(`Overage charges notification sent for box ${subscription.boxId}`);
+                    } catch (error) {
+                        console.error(`Failed to send overage charges notification for box ${subscription.boxId}:`, error);
+                        // Depending on requirements, you might want to alert or retry if this notification is critical
+                    }
+                    // --- END INTEGRATION ---
+
                     results.push({
                         subscriptionId: subscription.id,
                         boxId: subscription.boxId,
@@ -343,6 +364,27 @@ export class OverageBillingService {
             ))
             .returning();
 
+        // --- INTEGRATION: Send Payment Success Notification for Overage (Optional) ---
+        // If you want to notify the user specifically that their overage invoice was paid,
+        // you could add a call to a new notification method here.
+        // This might be redundant if the main subscription payment success notification covers it.
+        /*
+        if (result[0]) {
+             try {
+                 // You would need the amount paid, which is in result[0].totalOverageAmount
+                 // await this.billingNotificationService.sendOveragePaymentSuccessfulNotification(
+                 //     boxId,
+                 //     result[0].totalOverageAmount,
+                 //     polarInvoiceId // or a generated ID for the overage order
+                 // );
+                 // console.log(`Overage payment success notification sent for box ${boxId}`);
+             } catch (error) {
+                 console.error(`Failed to send overage payment success notification for box ${boxId}:`, error);
+             }
+        }
+        */
+        // --- END INTEGRATION (Optional/Placeholder) ---
+
         return result[0];
     }
 
@@ -366,6 +408,28 @@ export class OverageBillingService {
                 eq(overageBilling.billingPeriodEnd, billingPeriodEnd)
             ))
             .returning();
+
+        // --- INTEGRATION: Send Payment Failed Notification for Overage (Optional) ---
+        // If you want to notify the user specifically that their overage payment failed,
+        // you could add a call to a new notification method here.
+        // This might be redundant if the main subscription payment failure notification covers it,
+        // or if the overage charges notification itself is the trigger for payment.
+        /*
+        if (result[0]) {
+             try {
+                 // You would need the amount that failed, which is in result[0].totalOverageAmount
+                 // await this.billingNotificationService.sendOveragePaymentFailedNotification(
+                 //     boxId,
+                 //     result[0].totalOverageAmount,
+                 //     failureReason
+                 // );
+                 // console.log(`Overage payment failed notification sent for box ${boxId}`);
+             } catch (error) {
+                 console.error(`Failed to send overage payment failed notification for box ${boxId}:`, error);
+             }
+        }
+        */
+        // --- END INTEGRATION (Optional/Placeholder) ---
 
         return result[0];
     }
@@ -427,6 +491,17 @@ export class OverageBillingService {
             .where(eq(boxes.id, boxId))
             .returning();
 
+        // --- INTEGRATION: Send Notification for Overage Billing Enabled ---
+        // As determined necessary based on notification system requirements.
+        try {
+            await this.billingNotificationService.sendOverageBillingEnabledNotification(boxId);
+            console.log(`Overage billing enabled notification sent for box ${boxId}`);
+        } catch (error) {
+            console.error(`Failed to send overage billing enabled notification for box ${boxId}:`, error);
+            // Depending on requirements, you might want to alert if this notification fails.
+        }
+        // --- END INTEGRATION ---
+
         return result[0];
     }
 
@@ -441,6 +516,17 @@ export class OverageBillingService {
             })
             .where(eq(boxes.id, boxId))
             .returning();
+
+        // --- INTEGRATION: Send Notification for Overage Billing Disabled ---
+        // As determined necessary based on notification system requirements.
+        try {
+            await this.billingNotificationService.sendOverageBillingDisabledNotification(boxId);
+            console.log(`Overage billing disabled notification sent for box ${boxId}`);
+        } catch (error) {
+            console.error(`Failed to send overage billing disabled notification for box ${boxId}:`, error);
+            // Depending on requirements, you might want to alert if this notification fails.
+        }
+        // --- END INTEGRATION ---
 
         return result[0];
     }

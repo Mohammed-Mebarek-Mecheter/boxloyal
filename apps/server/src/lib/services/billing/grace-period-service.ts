@@ -3,8 +3,13 @@ import { db } from "@/db";
 import { gracePeriods, boxes } from "@/db/schema";
 import { eq, and, gte, lte, asc, desc } from "drizzle-orm";
 import type { GracePeriodReason } from "./types";
+// Import the BillingNotificationService
+import { BillingNotificationService } from "@/lib/services/notifications/billing-notifications-service";
 
 export class GracePeriodService {
+    // Instantiate the BillingNotificationService
+    private static billingNotificationService = new BillingNotificationService();
+
     /**
      * Create a grace period
      */
@@ -49,6 +54,18 @@ export class GracePeriodService {
             })
             .returning();
 
+        // --- INTEGRATION: Send Grace Period Notification ---
+        // After successfully creating a grace period, notify the user.
+        try {
+            await this.billingNotificationService.sendGracePeriodNotification(boxId, gracePeriod.id);
+            console.log(`Grace period notification sent for box ${boxId}, period ${gracePeriod.id}`);
+        } catch (error) {
+            console.error(`Failed to send grace period notification for box ${boxId}:`, error);
+            // Depending on requirements, you might want to alert or retry if this notification is critical
+            // Note: Failing to send the notification should not fail the grace period creation itself.
+        }
+        // --- END INTEGRATION ---
+
         return { gracePeriod, wasExisting: false };
     }
 
@@ -79,6 +96,17 @@ export class GracePeriodService {
                 updatedAt: new Date()
             })
             .where(eq(gracePeriods.id, gracePeriodId));
+
+        // --- INTEGRATION: Send Grace Period Resolved Notification ---
+        // As determined necessary based on notification system requirements.
+        try {
+            await this.billingNotificationService.sendGracePeriodResolvedNotification(gracePeriodId, resolution);
+            console.log(`Grace period resolved notification sent for period ${gracePeriodId}`);
+        } catch (error) {
+            console.error(`Failed to send grace period resolved notification for period ${gracePeriodId}:`, error);
+            // Depending on requirements, you might want to alert if this notification fails.
+        }
+        // --- END INTEGRATION ---
 
         return { success: true, gracePeriod };
     }
@@ -172,6 +200,18 @@ export class GracePeriodService {
             "overage_enabled",
             userId
         );
+
+        // --- INTEGRATION: Send Notification for Overage Billing Enabled ---
+        // As determined necessary based on notification system requirements.
+        // This ensures the user gets confirmation even if this specific service method triggers it.
+        try {
+            await this.billingNotificationService.sendOverageBillingEnabledNotification(boxId);
+            console.log(`Overage billing enabled notification sent for box ${boxId} (via GracePeriodService)`);
+        } catch (error) {
+            console.error(`Failed to send overage billing enabled notification for box ${boxId} (via GracePeriodService):`, error);
+            // Depending on requirements, you might want to alert if this notification fails.
+        }
+        // --- END INTEGRATION ---
 
         return { success: true, overageEnabled: true, gracePeriodsResolved: resolvedCount };
     }

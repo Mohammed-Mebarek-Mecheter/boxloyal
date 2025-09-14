@@ -8,9 +8,14 @@ import {
     boxes
 } from "@/db/schema";
 import { eq, and, desc } from "drizzle-orm";
-import type { PlanChangeType, PlanChangeRequest } from "./types";
+import type { PlanChangeType } from "./types";
+// Import the BillingNotificationService
+import { BillingNotificationService } from "@/lib/services/notifications/billing-notifications-service";
 
 export class PlanChangeService {
+    // Instantiate the BillingNotificationService
+    private static billingNotificationService = new BillingNotificationService();
+
     /**
      * Request a plan change
      */
@@ -61,10 +66,29 @@ export class PlanChangeService {
                 changeType,
                 requestedEffectiveDate: options.effectiveDate || new Date(),
                 requestedByUserId: options.requestedByUserId,
-                prorationType: options.prorationType || "immediate",
-                metadata: options.metadata || {}
+                prorationType: options.prorationType || "immediate"
             })
             .returning();
+
+        // --- INTEGRATION: Send Plan Change Requested Notification ---
+        // Notify the user that a plan change has been requested.
+        try {
+            await this.billingNotificationService.sendPlanChangeRequestedNotification(
+                boxId,
+                activeSubscription.plan!.tier,
+                toPlan.tier,
+                changeType,
+                planChangeRequest.id, // Pass the request ID
+                options.requestedByUserId, // Pass the requester ID
+                options.effectiveDate
+            );
+            console.log(`Plan change requested notification sent for box ${boxId}`);
+        } catch (error) {
+            console.error(`Failed to send plan change requested notification for box ${boxId}:`, error);
+            // Depending on requirements, you might want to alert if this notification fails.
+            // Note: Failing to send the notification should not fail the plan change request itself.
+        }
+        // --- END INTEGRATION ---
 
         return planChangeRequest;
     }
@@ -81,7 +105,8 @@ export class PlanChangeService {
             with: {
                 subscription: true,
                 fromPlan: true,
-                toPlan: true
+                toPlan: true,
+                box: true // Fetch box details for notification
             }
         });
 
@@ -118,11 +143,10 @@ export class PlanChangeService {
             changeType: planChangeRequest.changeType,
             fromPlanId: planChangeRequest.fromPlanId,
             toPlanId: planChangeRequest.toPlanId,
-            effectiveDate: planChangeRequest.requestedEffectiveDate || new Date(), // Ensure not null
+            effectiveDate: planChangeRequest.requestedEffectiveDate || new Date(),
             reason: "plan_change_request",
             triggeredByUserId: approvedByUserId,
-            proratedAmount,
-            metadata: planChangeRequest.metadata || {} // Ensure not null
+            proratedAmount
         });
 
         // Update subscription with new plan
@@ -144,11 +168,32 @@ export class PlanChangeService {
             })
             .where(eq(boxes.id, planChangeRequest.boxId));
 
-        return {
+        const result = {
             success: true,
             planChangeRequest,
             proratedAmount
         };
+
+        // --- INTEGRATION: Send Plan Change Confirmed Notification ---
+        // Notify the user that their plan change has been successfully processed.
+        try {
+            await this.billingNotificationService.sendPlanChangeConfirmedNotification(
+                planChangeRequest.boxId,
+                planChangeRequest.fromPlan?.tier || 'unknown',
+                planChangeRequest.toPlan?.tier || 'unknown',
+                planChangeRequest.changeType,
+                proratedAmount,
+                planChangeRequest.requestedEffectiveDate || new Date(),
+                planChangeRequest.id // Pass the request ID for deduplication
+            );
+            console.log(`Plan change confirmed notification sent for box ${planChangeRequest.boxId}`);
+        } catch (error) {
+            console.error(`Failed to send plan change confirmed notification for box ${planChangeRequest.boxId}:`, error);
+            // Depending on requirements, you might want to alert or retry if this notification is critical
+        }
+        // --- END INTEGRATION ---
+
+        return result;
     }
 
     /**
@@ -159,13 +204,43 @@ export class PlanChangeService {
         canceledByUserId: string,
         reason?: string
     ) {
+        const planChangeRequest = await db.query.planChangeRequests.findFirst({
+            where: eq(planChangeRequests.id, planChangeRequestId),
+            with: {
+                fromPlan: true,
+                toPlan: true,
+                box: true // Fetch box details for notification
+            }
+        });
+
+        if (!planChangeRequest) {
+            throw new Error("Plan change request not found");
+        }
+
         await db.update(planChangeRequests)
             .set({
-                status: "canceled" as any, // Cast to any to handle type mismatch
-                rejectedReason: reason, // Use rejectedReason instead of cancelReason
+                status: "canceled",
+                rejectedReason: reason,
                 updatedAt: new Date()
             })
             .where(eq(planChangeRequests.id, planChangeRequestId));
+
+        // --- INTEGRATION: Send Plan Change Canceled Notification ---
+        // Notify the user that their plan change request has been canceled.
+        try {
+            await this.billingNotificationService.sendPlanChangeCanceledNotification(
+                planChangeRequest.boxId,
+                planChangeRequest.fromPlan?.tier || 'unknown',
+                planChangeRequest.toPlan?.tier || 'unknown',
+                planChangeRequest.changeType,
+                reason
+            );
+            console.log(`Plan change canceled notification sent for box ${planChangeRequest.boxId}`);
+        } catch (error) {
+            console.error(`Failed to send plan change canceled notification for box ${planChangeRequest.boxId}:`, error);
+            // Depending on requirements, you might want to alert if this notification fails.
+        }
+        // --- END INTEGRATION ---
 
         return { success: true };
     }

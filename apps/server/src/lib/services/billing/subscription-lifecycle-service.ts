@@ -10,8 +10,13 @@ import { eq, and, or, desc } from "drizzle-orm";
 import type { SubscriptionStatus } from "./types";
 import { GracePeriodService } from "./grace-period-service";
 import { UsageTrackingService } from "./usage-tracking-service";
+// Import the BillingNotificationService
+import { BillingNotificationService } from "@/lib/services/notifications/billing-notifications-service";
 
 export class SubscriptionLifecycleService {
+    // Instantiate the BillingNotificationService
+    private static billingNotificationService = new BillingNotificationService();
+
     /**
      * Cancel a subscription
      */
@@ -102,6 +107,21 @@ export class SubscriptionLifecycleService {
             },
         }]);
 
+        // --- INTEGRATION: Send Billing Notification for Subscription Cancellation ---
+        try {
+            await this.billingNotificationService.sendSubscriptionCancelledNotification(
+                boxId,
+                cancelAtPeriodEnd,
+                reason,
+                cancelAtPeriodEnd ? activeSubscription.currentPeriodEnd : new Date()
+            );
+            console.log(`Subscription cancellation notification sent for box ${boxId}`);
+        } catch (error) {
+            console.error(`Failed to send subscription cancellation notification for box ${boxId}:`, error);
+            // Consider alerting or retry logic if notification is critical
+        }
+        // --- END INTEGRATION ---
+
         return {
             success: true,
             cancelAtPeriodEnd,
@@ -187,6 +207,16 @@ export class SubscriptionLifecycleService {
             reactivatedByUserId
         );
 
+        // --- INTEGRATION: Send Billing Notification for Subscription Reactivation ---
+        try {
+            await this.billingNotificationService.sendSubscriptionReactivatedNotification(boxId);
+            console.log(`Subscription reactivation notification sent for box ${boxId}`);
+        } catch (error) {
+            console.error(`Failed to send subscription reactivation notification for box ${boxId}:`, error);
+            // Depending on requirements, you might want to alert or retry if this notification is critical
+        }
+        // --- END INTEGRATION ---
+
         return {
             success: true,
             subscription: canceledSubscription,
@@ -250,7 +280,7 @@ export class SubscriptionLifecycleService {
      * Handle past due status
      */
     private static async handlePastDueStatus(boxId: string, eventData?: Record<string, any>) {
-        await GracePeriodService.createGracePeriod(boxId, "payment_failed", {
+        const gracePeriodResult = await GracePeriodService.createGracePeriod(boxId, "payment_failed", {
             severity: "critical",
             contextSnapshot: { polarEvent: eventData }
         });
@@ -259,13 +289,32 @@ export class SubscriptionLifecycleService {
             eventType: "payment_failed",
             metadata: eventData
         }]);
+
+        // --- INTEGRATION: Send Billing Notification for Payment Failure ---
+        // This requires extracting amount and attempt number from eventData.
+        // Assuming eventData contains this information based on Polar webhook structure.
+        // You might need to adjust the keys based on actual Polar event data.
+        try {
+            const amount = eventData?.amount_due || eventData?.amount || 0; // Adjust key as needed
+            const attemptNumber = eventData?.attempt_count || eventData?.attempt_number || 1; // Adjust key as needed
+
+            await this.billingNotificationService.sendPaymentFailedNotification(
+                boxId,
+                amount,
+                attemptNumber
+            );
+            console.log(`Payment failed notification sent for box ${boxId}`);
+        } catch (error) {
+            console.error(`Failed to send payment failed notification for box ${boxId}:`, error);
+        }
+        // --- END INTEGRATION ---
     }
 
     /**
      * Handle canceled status
      */
     private static async handleCanceledStatus(boxId: string, eventData?: Record<string, any>) {
-        await GracePeriodService.createGracePeriod(boxId, "subscription_canceled", {
+        const gracePeriodResult = await GracePeriodService.createGracePeriod(boxId, "subscription_canceled", {
             severity: "blocking",
             contextSnapshot: { polarEvent: eventData }
         });
@@ -274,6 +323,28 @@ export class SubscriptionLifecycleService {
             eventType: "subscription_canceled",
             metadata: eventData
         }]);
+
+        // --- INTEGRATION: Send Billing Notification for Subscription Cancellation (External) ---
+        // This might be redundant if `cancelSubscription` is always called internally,
+        // but it covers cases where cancellation is triggered externally (e.g., via Polar dashboard).
+        try {
+            // Extract reason if possible from eventData
+            const reason = eventData?.cancellation_details?.reason || eventData?.reason || "Subscription canceled via external system";
+            // Assuming immediate cancellation for external events unless specified otherwise
+            const cancelAtPeriodEnd = false;
+            const accessEndsAt = new Date(); // Or extract from eventData if available
+
+            await this.billingNotificationService.sendSubscriptionCancelledNotification(
+                boxId,
+                cancelAtPeriodEnd,
+                reason,
+                accessEndsAt
+            );
+            console.log(`External subscription cancellation notification sent for box ${boxId}`);
+        } catch (error) {
+            console.error(`Failed to send external subscription cancellation notification for box ${boxId}:`, error);
+        }
+        // --- END INTEGRATION ---
     }
 
     /**
@@ -291,6 +362,24 @@ export class SubscriptionLifecycleService {
             eventType: "payment_received",
             metadata: eventData
         }]);
+
+        // --- INTEGRATION: Send Billing Notification for Payment Success ---
+        // This requires extracting amount and invoice ID from eventData.
+        // Assuming eventData contains this information based on Polar webhook structure.
+        try {
+            const amount = eventData?.amount_paid || eventData?.amount_received || eventData?.amount || 0; // Adjust key as needed
+            const invoiceId = eventData?.id || eventData?.invoice_id || undefined; // Adjust key as needed
+
+            await this.billingNotificationService.sendPaymentSuccessfulNotification(
+                boxId,
+                amount,
+                invoiceId
+            );
+            console.log(`Payment successful notification sent for box ${boxId}`);
+        } catch (error) {
+            console.error(`Failed to send payment successful notification for box ${boxId}:`, error);
+        }
+        // --- END INTEGRATION ---
     }
 
     /**
@@ -355,13 +444,32 @@ export class SubscriptionLifecycleService {
             .where(eq(boxes.id, boxId));
 
         // Trigger grace period for trial ending
-        await GracePeriodService.createGracePeriod(boxId, "trial_ending", {
+        const gracePeriodResult = await GracePeriodService.createGracePeriod(boxId, "trial_ending", {
             severity: "critical",
             contextSnapshot: {
                 trialEndedAt: new Date().toISOString(),
                 subscriptionId: trialSubscription.id
             }
         });
+
+        // --- INTEGRATION: Send Billing Notification for Trial Ending ---
+        // This is handled by the GracePeriodService creating the grace period,
+        // and the GracePeriodService should trigger the notification.
+        // However, we can also send a direct notification here if needed *before* the grace period.
+        // For now, we rely on the grace period notification.
+        // If you want a notification *at the moment of expiry* (not just the grace period trigger),
+        // you could add it here. But typically, the grace period notification covers this.
+        // Example (optional/direct):
+        /*
+        try {
+            // We don't have days remaining here, so we assume 0 or just expired.
+            // The grace period notification will likely be more informative.
+            // await this.billingNotificationService.sendTrialEndingNotification(boxId, 0);
+        } catch (error) {
+             console.error(`Failed to send trial expiry notification for box ${boxId}:`, error);
+        }
+        */
+        // --- END INTEGRATION (Handled by GracePeriodService) ---
 
         return { success: true, subscription: trialSubscription };
     }

@@ -10,8 +10,13 @@ import {
 } from "@/db/schema";
 import { eq, and, gte, lte, count, desc } from "drizzle-orm";
 import type { UsageEventType, SubscriptionUsage, GracePeriodReason } from "./types";
+// Import the BillingNotificationService
+import { BillingNotificationService } from "@/lib/services/notifications/billing-notifications-service";
 
 export class UsageTrackingService {
+    // Instantiate the BillingNotificationService
+    private static billingNotificationService = new BillingNotificationService();
+
     /**
      * Calculate current usage for a box
      */
@@ -188,32 +193,83 @@ export class UsageTrackingService {
         // Update usage counts
         const usage = await this.updateBoxUsageCounts(boxId);
 
+        let limitApproachingNotificationSent = false;
+        let limitExceededNotificationSent = false;
+
         // Check if we need to trigger grace periods (only if overage is not enabled)
         if (!box.isOverageEnabled) {
             const checks = [
                 {
                     condition: eventTypes.some(e => e.eventType === "athlete_added"),
                     isOverLimit: usage.isAthleteOverLimit,
-                    reason: "athlete_limit_exceeded" as GracePeriodReason
+                    isApproachingLimit: usage.athletesPercentage >= 90,
+                    reason: "athlete_limit_exceeded" as GracePeriodReason,
+                    limitType: "athlete" as const,
+                    currentCount: usage.athletes,
+                    limit: usage.athleteLimit,
+                    percentage: usage.athletesPercentage
                 },
                 {
                     condition: eventTypes.some(e => e.eventType === "coach_added"),
                     isOverLimit: usage.isCoachOverLimit,
-                    reason: "coach_limit_exceeded" as GracePeriodReason
+                    isApproachingLimit: usage.coachesPercentage >= 90,
+                    reason: "coach_limit_exceeded" as GracePeriodReason,
+                    limitType: "coach" as const,
+                    currentCount: usage.coaches,
+                    limit: usage.coachLimit,
+                    percentage: usage.coachesPercentage
                 }
             ];
 
             for (const check of checks) {
-                if (check.condition && check.isOverLimit) {
-                    // Import GracePeriodService to avoid circular dependency
-                    const { GracePeriodService } = await import("./grace-period-service");
-                    await GracePeriodService.createGracePeriod(boxId, check.reason, {
-                        contextSnapshot: {
-                            usage,
-                            planTier: box.subscriptionTier,
-                            isOverageEnabled: box.isOverageEnabled
+                if (check.condition) {
+                    if (check.isOverLimit) {
+                        // Import GracePeriodService to avoid circular dependency issues at module level
+                        // It's imported dynamically here within the method to prevent circular dependency issues
+                        const { GracePeriodService } = await import("./grace-period-service");
+                        await GracePeriodService.createGracePeriod(boxId, check.reason, {
+                            contextSnapshot: {
+                                usage,
+                                planTier: box.subscriptionTier,
+                                isOverageEnabled: box.isOverageEnabled
+                            }
+                        });
+
+                        // --- INTEGRATION: Send Limit Exceeded Notification ---
+                        if (!limitExceededNotificationSent) { // Avoid sending multiple similar notifications
+                            try {
+                                await this.billingNotificationService.sendLimitExceededNotification(
+                                    boxId,
+                                    check.limitType,
+                                    check.currentCount,
+                                    check.limit
+                                );
+                                console.log(`Limit exceeded notification sent for box ${boxId} (${check.limitType})`);
+                                limitExceededNotificationSent = true; // Set flag to prevent duplicates
+                            } catch (error) {
+                                console.error(`Failed to send limit exceeded notification for box ${boxId} (${check.limitType}):`, error);
+                            }
                         }
-                    });
+                        // --- END INTEGRATION ---
+                    } else if (check.isApproachingLimit) {
+                        // --- INTEGRATION: Send Limit Approaching Notification ---
+                        if (!limitApproachingNotificationSent) { // Avoid sending multiple similar notifications
+                            try {
+                                await this.billingNotificationService.sendLimitApproachingNotification(
+                                    boxId,
+                                    check.limitType,
+                                    check.currentCount,
+                                    check.limit,
+                                    check.percentage
+                                );
+                                console.log(`Limit approaching notification sent for box ${boxId} (${check.limitType})`);
+                                limitApproachingNotificationSent = true; // Set flag to prevent duplicates
+                            } catch (error) {
+                                console.error(`Failed to send limit approaching notification for box ${boxId} (${check.limitType}):`, error);
+                            }
+                        }
+                        // --- END INTEGRATION ---
+                    }
                 }
             }
         }
