@@ -11,7 +11,7 @@ import {
 import { eq, and, gte, lte, count, desc } from "drizzle-orm";
 import type { UsageEventType, SubscriptionUsage, GracePeriodReason } from "./types";
 // Import the BillingNotificationService
-import { BillingNotificationService } from "@/lib/services/notifications/billing-notifications-service";
+import {BillingNotificationService} from "@/lib/services/notifications/billing";
 
 export class UsageTrackingService {
     // Instantiate the BillingNotificationService

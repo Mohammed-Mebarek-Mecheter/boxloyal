@@ -10,7 +10,7 @@ import {
 import { eq, and, desc } from "drizzle-orm";
 import type { PlanChangeType } from "./types";
 // Import the BillingNotificationService
-import { BillingNotificationService } from "@/lib/services/notifications/billing-notifications-service";
+import {BillingNotificationService} from "@/lib/services/notifications/billing";
 
 export class PlanChangeService {
     // Instantiate the BillingNotificationService

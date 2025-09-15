@@ -1,9 +1,9 @@
 // server/src/db/schema/views.ts
-import { pgView, text, integer, timestamp, numeric, uuid, jsonb, boolean } from "drizzle-orm/pg-core";
+import {pgView, text, integer, timestamp, numeric, uuid, jsonb, boolean, pgMaterializedView} from "drizzle-orm/pg-core";
 
 // 1. Materialized View: Intervention Effectiveness
 // Purpose: Aggregate and analyze the outcomes of coach interventions.
-export const mvInterventionEffectiveness = pgView("mv_intervention_effectiveness", {
+export const mvInterventionEffectiveness = pgMaterializedView("mv_intervention_effectiveness", {
     coachMembershipId: uuid("coach_membership_id"),
     boxId: uuid("box_id"),
     interventionType: text("intervention_type"),
@@ -34,7 +34,7 @@ export const vwWellnessPerformanceCorrelationHistory = pgView("vw_wellness_perfo
 
 // 3. Materialized View: Detailed Coach Performance
 // Purpose: Provide a more granular, time-series view of coach performance.
-export const mvDetailedCoachPerformance = pgView("mv_detailed_coach_performance", {
+export const mvDetailedCoachPerformance = pgMaterializedView("mv_detailed_coach_performance", {
     coachId: uuid("coach_id"),
     boxId: uuid("box_id"),
     monthStart: timestamp("month_start"),
@@ -47,7 +47,7 @@ export const mvDetailedCoachPerformance = pgView("mv_detailed_coach_performance"
 
 // 4. Materialized View: Retention Event Analysis
 // Purpose: Analyze patterns and reasons behind retention events.
-export const mvRetentionEventAnalysis = pgView("mv_retention_event_analysis", {
+export const mvRetentionEventAnalysis = pgMaterializedView("mv_retention_event_analysis", {
     boxId: uuid("box_id"),
     eventMonth: timestamp("event_month"),
     eventType: text("event_type"),
@@ -129,7 +129,7 @@ export const vwUpcomingInterventionFollowUps = pgView("vw_upcoming_intervention_
 
 // 8. Materialized View: Billing Event Processing Queue
 // Purpose: Help monitor and manage the processing of incoming billing events from Polar.
-export const mvBillingEventProcessingQueue = pgView("mv_billing_event_processing_queue", {
+export const mvBillingEventProcessingQueue = pgMaterializedView("mv_billing_event_processing_queue", {
     eventType: text("event_type"),
     status: text("status"),
     boxId: uuid("box_id"),
@@ -170,7 +170,7 @@ export const vwBoxBillingDetails = pgView("vw_box_billing_details", {
 
 // 10. Materialized View: Wellness Trends (Updated version)
 // Purpose: Aggregates average wellness scores for athletes on a weekly basis.
-export const mvWellnessTrends = pgView("mv_wellness_trends", {
+export const mvWellnessTrends = pgMaterializedView("mv_wellness_trends", {
     boxId: uuid("box_id"),
     membershipId: uuid("membership_id"),
     weekStart: timestamp("week_start"),
@@ -187,7 +187,7 @@ export const mvWellnessTrends = pgView("mv_wellness_trends", {
 
 // 11. Materialized View: Box Health Dashboard (Updated version)
 // Purpose: Pre-aggregates key metrics for the box health dashboard.
-export const mvBoxHealthDashboard = pgView("mv_box_health_dashboard", {
+export const mvBoxHealthDashboard = pgMaterializedView("mv_box_health_dashboard", {
     boxId: uuid("box_id"),
     period: text("period"),
     periodStart: timestamp("period_start"),
@@ -223,7 +223,7 @@ export const vwAthleteRiskOverview = pgView("vw_athlete_risk_overview", {
 
 // 13. Materialized View: Monthly Retention (Updated version)
 // Purpose: Performs cohort analysis to calculate monthly retention rates.
-export const mvMonthlyRetention = pgView("mv_monthly_retention", {
+export const mvMonthlyRetention = pgMaterializedView("mv_monthly_retention", {
     boxId: uuid("box_id"),
     cohortMonth: timestamp("cohort_month"),
     cohortSize: integer("cohort_size"),
@@ -235,7 +235,7 @@ export const mvMonthlyRetention = pgView("mv_monthly_retention", {
 
 // 14. Materialized View: Athlete Progress (Updated version)
 // Purpose: Creates a unified timeline of key athlete achievements.
-export const mvAthleteProgress = pgView("mv_athlete_progress", {
+export const mvAthleteProgress = pgMaterializedView("mv_athlete_progress", {
     membershipId: uuid("membership_id"),
     boxId: uuid("box_id"),
     eventType: text("event_type"),
@@ -247,7 +247,7 @@ export const mvAthleteProgress = pgView("mv_athlete_progress", {
 
 // 15. Materialized View: Wellness Performance Correlations
 // Purpose: Calculates correlations between wellness metrics and performance.
-export const mvWellnessPerformanceCorrelations = pgView("mv_wellness_performance_correlations", {
+export const mvWellnessPerformanceCorrelations = pgMaterializedView("mv_wellness_performance_correlations", {
     boxId: uuid("box_id"),
     membershipId: uuid("membership_id"),
     weekStart: timestamp("week_start"),
@@ -260,7 +260,7 @@ export const mvWellnessPerformanceCorrelations = pgView("mv_wellness_performance
 
 // 16. Materialized View: Coach Performance (Updated version)
 // Purpose: Aggregates performance metrics for coaches based on interventions and alert resolutions.
-export const mvCoachPerformance = pgView("mv_coach_performance", {
+export const mvCoachPerformance = pgMaterializedView("mv_coach_performance", {
     coachMembershipId: uuid("coach_membership_id"),
     boxId: uuid("box_id"),
     avgRiskScoreReduction: numeric("avg_risk_score_reduction"),
@@ -274,7 +274,7 @@ export const mvCoachPerformance = pgView("mv_coach_performance", {
 
 // 17. Materialized View: Athlete Engagement Scores (Updated version)
 // Purpose: Calculates an engagement score for each active athlete based on recent activity.
-export const mvAthleteEngagementScores = pgView("mv_athlete_engagement_scores", {
+export const mvAthleteEngagementScores = pgMaterializedView("mv_athlete_engagement_scores", {
     membershipId: uuid("membership_id"),
     boxId: uuid("box_id"),
     membershipPublicId: text("membership_public_id"),

@@ -10,8 +10,7 @@ import {
 import { eq, and, gte, lte, desc } from "drizzle-orm";
 import type { OverageCalculation } from "./types";
 import { UsageTrackingService } from "./usage-tracking-service";
-// Import the BillingNotificationService
-import { BillingNotificationService } from "@/lib/services/notifications/billing-notifications-service";
+import {BillingNotificationService} from "@/lib/services/notifications/billing";
 
 export class OverageBillingService {
     // Overage rates (in cents)

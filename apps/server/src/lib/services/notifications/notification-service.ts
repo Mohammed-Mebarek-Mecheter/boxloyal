@@ -4,18 +4,15 @@ import {
     notifications,
     notificationDeliveries,
     notificationPreferences,
-    notificationTemplates,
-    boxes,
-    boxMemberships,
+    notificationTemplates
 } from "@/db/schema";
 import { eq, and, or, gte, lte, count, sql } from "drizzle-orm";
 import { BrevoService } from "./brevo-service";
 import { QueueService } from "./queue-service";
 import type {
     NotificationCreateParams,
-    NotificationDeliveryOptions,
     NotificationBatch,
-    NotificationStats,
+    NotificationStats
 } from "./types";
 
 export class NotificationService {

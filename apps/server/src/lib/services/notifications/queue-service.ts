@@ -7,6 +7,10 @@ export interface QueueMessage {
     scheduledFor?: Date;
     retryCount?: number;
     maxRetries?: number;
+    // Optional: Include job type for more specific processing in the webhook handler
+    jobType?: string;
+    // Optional: Include payload data if needed directly in the message
+    payload?: Record<string, any>;
 }
 
 interface QueueStatsResponse {
@@ -31,6 +35,9 @@ export class QueueService {
         retry: "notifications-retry",
     } as const;
 
+    // QStash API base URL
+    private static readonly QSTASH_API_URL = "https://qstash.upstash.io/v2";
+
     constructor() {
         const token = process.env.QSTASH_TOKEN;
         if (!token) {
@@ -38,7 +45,8 @@ export class QueueService {
         }
 
         this.client = new Client({ token });
-        this.baseUrl = process.env.NOTIFICATION_WEBHOOK_URL || "https://your-domain.com";
+        // Remove trailing slash and potential extra space
+        this.baseUrl = (process.env.NOTIFICATION_WEBHOOK_URL || "https://your-domain.com").replace(/\/\s*$/, '');
     }
 
     /**
@@ -53,7 +61,7 @@ export class QueueService {
                 // Create or update queue with appropriate parallelism
                 const parallelism = this.getQueueParallelism(queueName);
 
-                const response = await fetch('https://qstash.upstash.io/v2/queues/', {
+                const response = await fetch(`${QueueService.QSTASH_API_URL}/queues/`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${process.env.QSTASH_TOKEN}`,
@@ -70,7 +78,8 @@ export class QueueService {
                 } else if (response.status === 412) {
                     results.push({ queue: queueName, status: 'exists', parallelism });
                 } else {
-                    throw new Error(`Failed to create queue: ${response.statusText}`);
+                    const errorText = await response.text();
+                    throw new Error(`Failed to create queue (${response.status}): ${errorText}`);
                 }
             } catch (error) {
                 console.error(`Failed to initialize queue ${queueName}:`, error);
@@ -86,11 +95,12 @@ export class QueueService {
     }
 
     /**
-     * Queue notification for processing
+     * Queue notification for immediate processing
      */
     async queueNotification(notificationId: string, priority: "low" | "normal" | "high" | "critical" = "normal") {
         const queueName = QueueService.QUEUES[priority];
-        const webhookUrl = `${this.baseUrl}/webhooks/notifications/process`;
+        // Use a dedicated endpoint for processing individual notifications
+        const webhookUrl = `${this.baseUrl}/api/notifications/webhook/process`;
 
         const message: QueueMessage = {
             notificationId,
@@ -120,50 +130,79 @@ export class QueueService {
     }
 
     /**
-     * Schedule notification for future delivery
+     * Schedule notification for future delivery using QStash Schedules
+     * This is the key enhancement to enable time-based notifications.
      */
-    async scheduleNotification(notificationId: string, scheduledFor: Date) {
-        const webhookUrl = `${this.baseUrl}/webhooks/notifications/process`;
-        const delay = Math.max(0, scheduledFor.getTime() - Date.now());
+    async scheduleNotification(notificationId: string, scheduledFor: Date, priority: "low" | "normal" | "high" | "critical" = "normal") {
+        const webhookUrl = `${this.baseUrl}/api/notifications/webhook/process`;
 
         const message: QueueMessage = {
             notificationId,
-            priority: "normal",
+            priority,
             scheduledFor,
+            jobType: "scheduled_notification"
         };
 
+        // Ensure the schedule time is in the future
+        const scheduleTimeMs = scheduledFor.getTime();
+        const nowMs = Date.now();
+        if (scheduleTimeMs <= nowMs) {
+            console.warn(`Schedule time for notification ${notificationId} is in the past or now. Queuing immediately.`);
+            return this.queueNotification(notificationId, priority);
+        }
+
         try {
-            await this.client.publishJSON({
-                queueName: QueueService.QUEUES.scheduled,
-                url: webhookUrl,
-                body: message,
-                delay: Math.floor(delay / 1000), // QStash expects seconds
+            // Use QStash Schedules API - fixed URL and response handling
+            const response = await fetch(`${QueueService.QSTASH_API_URL}/schedules/`, {
+                method: 'POST',
                 headers: {
-                    "X-Notification-ID": notificationId,
-                    "X-Scheduled-For": scheduledFor.toISOString(),
+                    'Authorization': `Bearer ${process.env.QSTASH_TOKEN}`,
+                    'Content-Type': 'application/json',
+                    'Upstash-Callback': webhookUrl
                 },
+                body: JSON.stringify({
+                    destination: webhookUrl,
+                    cron: `@at(${new Date(scheduleTimeMs).toISOString()})`,
+                    body: JSON.stringify(message),
+                    headers: {
+                        "X-Notification-ID": notificationId,
+                        "X-Priority": priority,
+                        "X-Scheduled-For": scheduledFor.toISOString(),
+                        "Content-Type": "application/json"
+                    }
+                })
             });
 
-            console.log(`Scheduled notification ${notificationId} for ${scheduledFor.toISOString()}`);
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Failed to schedule notification via QStash API (${response.status}): ${errorText}`);
+            }
 
-            return { success: true, scheduledFor, notificationId };
+            const scheduleData = await response.json() as { scheduleId: string };
+            const scheduleId = scheduleData.scheduleId;
+
+            console.log(`Scheduled notification ${notificationId} for ${scheduledFor.toISOString()} with schedule ID ${scheduleId}`);
+
+            return { success: true, scheduledFor, notificationId, scheduleId };
         } catch (error) {
             console.error(`Failed to schedule notification ${notificationId}:`, error);
             throw error;
         }
     }
 
+
     /**
      * Queue notification retry
      */
     async queueRetry(notificationId: string, retryCount: number, delaySeconds: number = 60) {
-        const webhookUrl = `${this.baseUrl}/webhooks/notifications/retry`;
+        const webhookUrl = `${this.baseUrl}/api/notifications/webhook/retry`;
 
         const message: QueueMessage = {
             notificationId,
-            priority: "normal",
+            priority: "normal", // Retries can potentially use a specific priority queue if needed
             retryCount,
             maxRetries: 3,
+            jobType: "retry_notification"
         };
 
         try {
@@ -192,19 +231,25 @@ export class QueueService {
      */
     async queueBatch(notificationIds: string[], priority: "low" | "normal" | "high" | "critical" = "normal") {
         const queueName = QueueService.QUEUES[priority];
-        const webhookUrl = `${this.baseUrl}/webhooks/notifications/batch`;
+        const webhookUrl = `${this.baseUrl}/api/notifications/webhook/batch`;
 
-        const batchId = `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const batchId = `batch_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+        const message: QueueMessage = {
+            notificationId: batchId, // Use batchId as a pseudo-notificationId for tracking
+            priority,
+            jobType: "batch_notification",
+            payload: {
+                batchId,
+                notificationIds,
+            }
+        };
 
         try {
             await this.client.publishJSON({
                 queueName,
                 url: webhookUrl,
-                body: {
-                    batchId,
-                    notificationIds,
-                    priority,
-                },
+                body: message, // Send the structured message
                 headers: {
                     "X-Batch-ID": batchId,
                     "X-Batch-Size": notificationIds.length.toString(),
@@ -229,7 +274,7 @@ export class QueueService {
 
         for (const [priority, queueName] of Object.entries(QueueService.QUEUES)) {
             try {
-                const response = await fetch(`https://qstash.upstash.io/v2/queues/${queueName}`, {
+                const response = await fetch(`${QueueService.QSTASH_API_URL}/queues/${queueName}`, {
                     headers: {
                         'Authorization': `Bearer ${process.env.QSTASH_TOKEN}`
                     }
@@ -245,9 +290,10 @@ export class QueueService {
                         updatedAt: data.updatedAt,
                     };
                 } else {
+                    const errorText = await response.text();
                     stats[priority] = {
                         name: queueName,
-                        error: `HTTP ${response.status}`,
+                        error: `HTTP ${response.status}: ${errorText}`,
                     };
                 }
             } catch (error) {
@@ -268,7 +314,7 @@ export class QueueService {
         const queueName = QueueService.QUEUES[priority];
 
         try {
-            const response = await fetch(`https://qstash.upstash.io/v2/queues/${queueName}/pause`, {
+            const response = await fetch(`${QueueService.QSTASH_API_URL}/queues/${queueName}/pause`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${process.env.QSTASH_TOKEN}`
@@ -279,7 +325,8 @@ export class QueueService {
                 console.log(`Paused queue ${queueName}`);
                 return { success: true, queue: queueName, action: 'paused' };
             } else {
-                throw new Error(`Failed to pause queue: ${response.statusText}`);
+                const errorText = await response.text();
+                throw new Error(`Failed to pause queue (${response.status}): ${errorText}`);
             }
         } catch (error) {
             console.error(`Failed to pause queue ${queueName}:`, error);
@@ -294,7 +341,7 @@ export class QueueService {
         const queueName = QueueService.QUEUES[priority];
 
         try {
-            const response = await fetch(`https://qstash.upstash.io/v2/queues/${queueName}/resume`, {
+            const response = await fetch(`${QueueService.QSTASH_API_URL}/queues/${queueName}/resume`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${process.env.QSTASH_TOKEN}`
@@ -305,7 +352,8 @@ export class QueueService {
                 console.log(`Resumed queue ${queueName}`);
                 return { success: true, queue: queueName, action: 'resumed' };
             } else {
-                throw new Error(`Failed to resume queue: ${response.statusText}`);
+                const errorText = await response.text();
+                throw new Error(`Failed to resume queue (${response.status}): ${errorText}`);
             }
         } catch (error) {
             console.error(`Failed to resume queue ${queueName}:`, error);
@@ -329,13 +377,39 @@ export class QueueService {
     /**
      * Get batch delay for non-critical notifications
      */
-    private getBatchDelay(priority: string): number {
+    private getBatchDelay(priority: "low" | "normal" | "high" | "critical"): number {
         switch (priority) {
             case 'critical': return 0;
             case 'high': return 30; // 30 seconds
             case 'normal': return 120; // 2 minutes
             case 'low': return 300; // 5 minutes
             default: return 120;
+        }
+    }
+
+    /**
+     * Cancel a scheduled notification (using QStash Schedule ID)
+     * @param scheduleId The ID of the schedule returned by scheduleNotification
+     */
+    async cancelScheduledNotification(scheduleId: string) {
+        try {
+            const response = await fetch(`${QueueService.QSTASH_API_URL}/schedules/${scheduleId}`, {
+                method: 'DELETE',
+                headers: {
+                    'Authorization': `Bearer ${process.env.QSTASH_TOKEN}`
+                }
+            });
+
+            if (response.ok) {
+                console.log(`Cancelled scheduled notification with schedule ID ${scheduleId}`);
+                return { success: true, scheduleId };
+            } else {
+                const errorText = await response.text();
+                throw new Error(`Failed to cancel scheduled notification (${response.status}): ${errorText}`);
+            }
+        } catch (error) {
+            console.error(`Failed to cancel scheduled notification ${scheduleId}:`, error);
+            throw error;
         }
     }
 }

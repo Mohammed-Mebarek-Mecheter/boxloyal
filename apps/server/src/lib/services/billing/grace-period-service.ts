@@ -4,7 +4,7 @@ import { gracePeriods, boxes } from "@/db/schema";
 import { eq, and, gte, lte, asc, desc } from "drizzle-orm";
 import type { GracePeriodReason } from "./types";
 // Import the BillingNotificationService
-import { BillingNotificationService } from "@/lib/services/notifications/billing-notifications-service";
+import {BillingNotificationService} from "@/lib/services/notifications/billing";
 
 export class GracePeriodService {
     // Instantiate the BillingNotificationService

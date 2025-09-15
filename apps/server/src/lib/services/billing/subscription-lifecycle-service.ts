@@ -11,7 +11,7 @@ import type { SubscriptionStatus } from "./types";
 import { GracePeriodService } from "./grace-period-service";
 import { UsageTrackingService } from "./usage-tracking-service";
 // Import the BillingNotificationService
-import { BillingNotificationService } from "@/lib/services/notifications/billing-notifications-service";
+import {BillingNotificationService} from "@/lib/services/notifications/billing";
 
 export class SubscriptionLifecycleService {
     // Instantiate the BillingNotificationService
