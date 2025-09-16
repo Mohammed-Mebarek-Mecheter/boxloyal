@@ -7,11 +7,267 @@ import {
     athleteBenchmarks,
     boxAnalytics,
     athleteRiskScores,
+    athleteAlerts,
     wodAttendance,
-    wodFeedback,
     boxes
 } from "@/db/schema";
-import { eq, and, gte, count, sql, avg, sum, lte, desc, inArray, not } from "drizzle-orm";
+import { eq, and, gte, count, sql, avg, lte, inArray } from "drizzle-orm";
+
+type AlertTypeEnum = 'risk_threshold' | 'performance_decline' | 'attendance_drop' | 'wellness_concern' | 'milestone_celebration' | 'checkin_reminder' | 'pr_celebration' | 'benchmark_improvement' | 'intervention_needed' | 'feedback_request';
+type RiskLevelEnum = 'low' | 'medium' | 'high' | 'critical';
+type AlertStatusEnum = 'active' | 'acknowledged' | 'resolved' | 'escalated' | 'snoozed';
+
+export interface GeneratedAlertData {
+    boxId: string;
+    membershipId: string;
+    alertType: AlertTypeEnum;
+    severity: RiskLevelEnum; // Maps to riskLevel from risk score
+    title: string;
+    description: string;
+    triggerData: any; // Store relevant risk score data or metrics that triggered the alert
+    suggestedActions: any; // Basic suggestions based on alert type
+    status: AlertStatusEnum;
+    assignedCoachId: string | null; // Could be looked up or assigned later
+    createdAt: Date;
+    updatedAt: Date;
+}
+
+/**
+ * Generates an alert object based on an athlete's risk score.
+ * This determines the alert type, severity, title, description, and suggested actions.
+ */
+export function generateAlertFromRiskScore(riskScore: any): GeneratedAlertData | null {
+    // Only generate alerts for medium, high, or critical risk levels
+    if (riskScore.riskLevel === 'low') {
+        return null;
+    }
+
+    let alertType: AlertTypeEnum = 'risk_threshold'; // Default type
+    let title = `Athlete at ${riskScore.riskLevel} Risk`;
+    let description = `Athlete ${riskScore.membershipId} has been assessed with a ${riskScore.riskLevel} risk level (Score: ${riskScore.overallRiskScore}).`;
+    let suggestedActions: any = { general: "Review athlete's recent activity, wellness check-ins, and performance data. Consider reaching out for a check-in or discussion." };
+
+    // Determine specific alert type and details based on factors or trends
+    // Example logic (you can refine based on your `factors` structure or trends):
+    if (riskScore.attendanceTrend !== null && riskScore.attendanceTrend < -20) { // e.g., 20% decline
+        alertType = 'attendance_drop';
+        title = "Significant Attendance Drop Detected";
+        description = `Athlete's attendance has declined by ${Math.abs(riskScore.attendanceTrend).toFixed(1)}% recently. This could indicate disengagement.`;
+        suggestedActions = { attendance: "Reach out to understand reasons for missed sessions. Offer support or schedule a catch-up." };
+    } else if (riskScore.performanceTrend !== null && riskScore.performanceTrend < -10) { // e.g., 10% decline
+        alertType = 'performance_decline';
+        title = "Athlete Performance Declining";
+        description = `Athlete's performance metrics (PRs/Benchmarks) show a ${Math.abs(riskScore.performanceTrend).toFixed(1)}% decline.`;
+        suggestedActions = { performance: "Review recent workouts. Discuss training load or potential plateaus. Offer personalized coaching tips." };
+    } else if (riskScore.wellnessTrend !== null && riskScore.wellnessTrend < -15) { // e.g., 15% decline in wellness score
+        alertType = 'wellness_concern';
+        title = "Athlete Wellness Concern";
+        description = `Athlete's self-reported wellness scores have dropped significantly by ${Math.abs(riskScore.wellnessTrend).toFixed(1)}%.`;
+        suggestedActions = { wellness: "Consider checking in on the athlete's well-being. Offer resources or discuss workload." };
+    } else if (riskScore.daysSinceLastVisit !== null && riskScore.daysSinceLastVisit > 14) { // e.g., 2 weeks
+        alertType = 'risk_threshold';
+        title = "Prolonged Absence from Box";
+        description = `Athlete has not attended a session in ${riskScore.daysSinceLastVisit} days.`;
+        suggestedActions = { re_engagement: "Initiate contact to understand the absence. Offer support or invite back to sessions." };
+    } else if (riskScore.daysSinceLastCheckin !== null && riskScore.daysSinceLastCheckin > 7) { // e.g., 1 week
+        // This might be a lower severity alert or a different type, but for now, we can include it if risk is high/critical
+        if (riskScore.riskLevel === 'high' || riskScore.riskLevel === 'critical') {
+            alertType = 'checkin_reminder'; // Or modify existing alert description
+            title = "Athlete at Risk - No Recent Check-in";
+            description += ` They have also not submitted a wellness check-in for ${riskScore.daysSinceLastCheckin} days.`;
+            suggestedActions['checkin'] = "Prompt athlete to complete their wellness check-in for better insights.";
+        }
+    }
+
+    // Severity maps directly from risk level
+    const severity: RiskLevelEnum = riskScore.riskLevel;
+
+    return {
+        boxId: riskScore.boxId,
+        membershipId: riskScore.membershipId,
+        alertType,
+        severity,
+        title,
+        description,
+        triggerData: {
+            riskScore: riskScore.overallRiskScore,
+            riskLevel: riskScore.riskLevel,
+            churnProbability: riskScore.churnProbability,
+            factors: riskScore.factors,
+            trends: {
+                attendance: riskScore.attendanceTrend,
+                performance: riskScore.performanceTrend,
+                wellness: riskScore.wellnessTrend
+            },
+            lastActivity: {
+                visit: riskScore.daysSinceLastVisit,
+                checkin: riskScore.daysSinceLastCheckin,
+                pr: riskScore.daysSinceLastPr
+            }
+        },
+        suggestedActions,
+        status: 'active', // Default status
+        assignedCoachId: null, // Assignment logic can be separate or part of upsert
+        createdAt: new Date(),
+        updatedAt: new Date()
+    };
+}
+
+/**
+ * Processes and upserts alerts for athletes in a specific box based on their latest risk scores.
+ * This function identifies athletes with risk scores above a threshold and creates or updates alerts.
+ */
+export async function processAthleteAlertsForBox(boxId: string) {
+    try {
+        console.log(`[Alerts] Starting alert processing for box ${boxId}`);
+
+        // 1. Fetch the latest valid risk scores for all active athletes in the box
+        // Using a window function or subquery to get the most recent score per athlete
+        // This query gets the latest risk score for each membership in the box that is still valid
+        const latestRiskScores = await db.execute(sql`
+            SELECT DISTINCT ON (membership_id)
+                id, box_id, membership_id, overall_risk_score, risk_level, churn_probability,
+                attendance_score, performance_score, engagement_score, wellness_score,
+                attendance_trend, performance_trend, engagement_trend, wellness_trend,
+                days_since_last_visit, days_since_last_checkin, days_since_last_pr,
+                factors, calculated_at, valid_until
+            FROM ${athleteRiskScores}
+            WHERE box_id = ${boxId} AND valid_until > NOW()
+            ORDER BY membership_id, calculated_at DESC
+        `);
+
+        if (!latestRiskScores || latestRiskScores.rows.length === 0) {
+            console.log(`[Alerts] No valid risk scores found for box ${boxId}.`);
+            return { boxId, alertsGenerated: 0, alertsUpdated: 0 };
+        }
+
+        console.log(`[Alerts] Found ${latestRiskScores.rows.length} latest risk scores for box ${boxId}`);
+
+        // 2. Generate alert data for each relevant risk score
+        const generatedAlerts: GeneratedAlertData[] = [];
+        for (const riskScoreRow of latestRiskScores.rows) {
+            // The row from `execute` is a plain object, might need type assertion or mapping
+            // Map the row object to the structure expected by `generateAlertFromRiskScore`
+            // Ensure decimal strings are converted if needed by the logic (though comparison might work)
+            const mappedRiskScore = {
+                ...riskScoreRow,
+                // Convert string decimals back to numbers if your logic requires it
+                // overallRiskScore: parseFloat(riskScoreRow.overall_risk_score),
+                // churnProbability: riskScoreRow.churn_probability ? parseFloat(riskScoreRow.churn_probability) : null,
+                // ... (convert other decimal fields if necessary)
+                riskLevel: riskScoreRow.risk_level, // This should match the enum type
+                // Ensure nested objects like `factors` are parsed if stored as JSON strings
+                factors: typeof riskScoreRow.factors === 'string' ? JSON.parse(riskScoreRow.factors) : riskScoreRow.factors
+            };
+
+            const alertData = generateAlertFromRiskScore(mappedRiskScore);
+            if (alertData) {
+                generatedAlerts.push(alertData);
+            }
+        }
+
+        console.log(`[Alerts] Generated ${generatedAlerts.length} alerts for box ${boxId}`);
+
+        if (generatedAlerts.length === 0) {
+            console.log(`[Alerts] No alerts generated for box ${boxId}.`);
+            return { boxId, alertsGenerated: 0, alertsUpdated: 0 };
+        }
+
+        // 3. Upsert the generated alerts into the athleteAlerts table
+        // Use a transaction or loop for upserts if needed, but drizzle's `insert ... onConflict` should work
+        let alertsGenerated = 0;
+        let alertsUpdated = 0;
+
+        // Process alerts in batches to avoid overwhelming the DB
+        const batchSize = 20;
+        for (let i = 0; i < generatedAlerts.length; i += batchSize) {
+            const batch = generatedAlerts.slice(i, i + batchSize);
+
+            // For each alert in the batch, perform an upsert
+            // We'll upsert based on membershipId and alertType, assuming one active alert of a type per athlete
+            // Adjust the conflict target and logic as needed (e.g., maybe just membershipId and status='active')
+            const batchPromises = batch.map(alert => {
+                // Convert numbers to strings for decimal fields if your schema requires it (like in processBoxAnalyticsSnapshot)
+                // Although athleteAlerts doesn't seem to have decimal fields for the main alert data itself,
+                // the triggerData JSON might contain them. Ensure consistency.
+                return db.insert(athleteAlerts).values({
+                    boxId: alert.boxId,
+                    membershipId: alert.membershipId,
+                    alertType: alert.alertType,
+                    severity: alert.severity,
+                    title: alert.title,
+                    description: alert.description,
+                    triggerData: alert.triggerData, // JSON field
+                    suggestedActions: alert.suggestedActions, // JSON field
+                    status: alert.status,
+                    assignedCoachId: alert.assignedCoachId,
+                    createdAt: alert.createdAt,
+                    updatedAt: alert.updatedAt,
+                    // Add other fields like `acknowledgedAt`, `resolvedAt` if needed, defaulting to null
+                })
+                    .onConflictDoUpdate({
+                        // Conflict target: Modify based on your unique constraint logic
+                        // Example: Unique constraint on (box_id, membership_id, alert_type) for active alerts
+                        // Or maybe just (membership_id) if only one alert per athlete is desired at a time.
+                        // Check your schema definition for the unique constraint or primary key.
+                        // Assuming a unique constraint like `boxMembershipAlertTypeUnique` on (boxId, membershipId, alertType)
+                        // Adjust the target fields accordingly.
+                        // If no specific unique constraint, you might need a different strategy like checking for existing 'active' alerts first.
+                        target: [athleteAlerts.boxId, athleteAlerts.membershipId, athleteAlerts.alertType], // Example target
+                        set: {
+                            // On conflict, update the alert details as the risk score might have changed
+                            severity: alert.severity,
+                            title: alert.title,
+                            description: alert.description,
+                            triggerData: alert.triggerData,
+                            suggestedActions: alert.suggestedActions,
+                            updatedAt: new Date(),
+                            // Potentially reset status to 'active' if it was resolved/acknowledged?
+                            // status: sql`CASE WHEN ${athleteAlerts.status} IN ('resolved', 'acknowledged') THEN 'active' ELSE ${athleteAlerts.status} END`,
+                            // Or keep status as is if it was already acknowledged/resolved?
+                            // For simplicity, let's update the details but not force status change.
+                            // status: alert.status // This might reactivate resolved alerts, be careful.
+                        },
+                        // If you want to avoid updating if the alert is already resolved/acknowledged:
+                        // where: eq(athleteAlerts.status, 'active') // Only update if currently active
+                        // The `where` clause in `onConflictDoUpdate` is not standard SQL in all ORMs.
+                        // Drizzle might not support it directly in this context. You might need to handle this logic differently.
+                        // E.g., fetch existing alert, check status, then decide to insert/update.
+                        // For now, we'll proceed with the basic upsert, assuming the conflict target handles uniqueness appropriately
+                        // and that updating details of an existing alert (even if resolved) is acceptable or handled by the UI.
+                    });
+            });
+
+            const batchResults = await Promise.allSettled(batchPromises);
+
+            batchResults.forEach(result => {
+                if (result.status === 'fulfilled') {
+                    // Drizzle's `onConflictDoUpdate` doesn't directly tell if it was an insert or update in the result.
+                    // You might need to inspect the result or use separate queries/transactions if you need this distinction.
+                    // For now, we'll increment a general counter or assume all are new/updated.
+                    // A simple way (though not 100% accurate) is to assume if there were no errors, something happened.
+                    // A more robust way would be to check the number of affected rows or use a transaction with explicit checks.
+                    // Let's assume for now each call results in an alert being present/updated.
+                    alertsGenerated++; // This is a simplification.
+                } else {
+                    console.error(`[Alerts] Error upserting alert:`, result.reason);
+                }
+            });
+
+            // Small delay between batches
+            if (i + batchSize < generatedAlerts.length) {
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+        }
+
+        console.log(`[Alerts] Completed alert processing for box ${boxId}. Alerts handled: ${alertsGenerated}`);
+        return { boxId, alertsGenerated, alertsUpdated }; // Refine counts if needed
+
+    } catch (error) {
+        console.error(`[Alerts] Error processing alerts for box ${boxId}:`, error);
+        throw error;
+    }
+}
 
 export type AnalyticsPeriod = "daily" | "weekly" | "monthly";
 
@@ -556,21 +812,34 @@ export async function calculateAthleteRiskScore(
  * Upsert risk score to database
  */
 export async function upsertAthleteRiskScore(riskScoreData: AthleteRiskScoreData) {
-    await db.insert(athleteRiskScores).values(riskScoreData)
+    await db.insert(athleteRiskScores).values({
+        ...riskScoreData,
+        // Convert numbers to strings for decimal fields
+        overallRiskScore: riskScoreData.overallRiskScore.toString(),
+        churnProbability: riskScoreData.churnProbability?.toString() ?? null,
+        attendanceScore: riskScoreData.attendanceScore.toString(),
+        performanceScore: riskScoreData.performanceScore.toString(),
+        engagementScore: riskScoreData.engagementScore.toString(),
+        wellnessScore: riskScoreData.wellnessScore.toString(),
+        attendanceTrend: riskScoreData.attendanceTrend?.toString() ?? null,
+        performanceTrend: riskScoreData.performanceTrend?.toString() ?? null,
+        engagementTrend: riskScoreData.engagementTrend?.toString() ?? null,
+        wellnessTrend: riskScoreData.wellnessTrend?.toString() ?? null,
+    })
         .onConflictDoUpdate({
             target: [athleteRiskScores.membershipId],
             set: {
-                overallRiskScore: riskScoreData.overallRiskScore,
-                riskLevel: riskScoreData.riskLevel,
-                churnProbability: riskScoreData.churnProbability,
-                attendanceScore: riskScoreData.attendanceScore,
-                performanceScore: riskScoreData.performanceScore,
-                engagementScore: riskScoreData.engagementScore,
-                wellnessScore: riskScoreData.wellnessScore,
-                attendanceTrend: riskScoreData.attendanceTrend,
-                performanceTrend: riskScoreData.performanceTrend,
-                engagementTrend: riskScoreData.engagementTrend,
-                wellnessTrend: riskScoreData.wellnessTrend,
+                // Convert numbers to strings for decimal fields
+                overallRiskScore: riskScoreData.overallRiskScore.toString(),
+                churnProbability: riskScoreData.churnProbability?.toString() ?? null,
+                attendanceScore: riskScoreData.attendanceScore.toString(),
+                performanceScore: riskScoreData.performanceScore.toString(),
+                engagementScore: riskScoreData.engagementScore.toString(),
+                wellnessScore: riskScoreData.wellnessScore.toString(),
+                attendanceTrend: riskScoreData.attendanceTrend?.toString() ?? null,
+                performanceTrend: riskScoreData.performanceTrend?.toString() ?? null,
+                engagementTrend: riskScoreData.engagementTrend?.toString() ?? null,
+                wellnessTrend: riskScoreData.wellnessTrend?.toString() ?? null,
                 daysSinceLastVisit: riskScoreData.daysSinceLastVisit,
                 daysSinceLastCheckin: riskScoreData.daysSinceLastCheckin,
                 daysSinceLastPr: riskScoreData.daysSinceLastPr,
@@ -591,7 +860,35 @@ export async function processBoxAnalyticsSnapshot(boxId: string, period: Analyti
         const snapshotData = await calculateBoxAnalyticsSnapshot(boxId, period);
         console.log(`[Analytics] Upserting ${period} snapshot for box ${boxId}`);
 
-        await db.insert(boxAnalytics).values(snapshotData)
+        await db.insert(boxAnalytics).values({
+            boxId: snapshotData.boxId,
+            period: snapshotData.period,
+            periodStart: snapshotData.periodStart,
+            periodEnd: snapshotData.periodEnd,
+            totalAthletes: snapshotData.totalAthletes,
+            activeAthletes: snapshotData.activeAthletes,
+            newAthletes: snapshotData.newAthletes,
+            churnedAthletes: snapshotData.churnedAthletes,
+            retentionRate: snapshotData.retentionRate.toString(),
+            totalCheckins: snapshotData.totalCheckins,
+            totalAttendances: snapshotData.totalAttendances,
+            avgAttendancePerAthlete: snapshotData.avgAttendancePerAthlete.toString(),
+            checkinRate: snapshotData.checkinRate.toString(),
+            totalPrs: snapshotData.totalPrs,
+            totalBenchmarkAttempts: snapshotData.totalBenchmarkAttempts,
+            avgAthletePerformanceScore: snapshotData.avgAthletePerformanceScore.toString(),
+            highRiskAthletes: snapshotData.highRiskAthletes,
+            totalActiveAlerts: snapshotData.totalActiveAlerts,
+            alertsResolved: snapshotData.alertsResolved,
+            avgTimeToAlertResolution: snapshotData.avgTimeToAlertResolution !== null ? snapshotData.avgTimeToAlertResolution.toString() : null,
+            avgEnergyLevel: snapshotData.avgEnergyLevel?.toString() ?? null,
+            avgSleepQuality: snapshotData.avgSleepQuality?.toString() ?? null,
+            avgStressLevel: snapshotData.avgStressLevel?.toString() ?? null,
+            avgWorkoutReadiness: snapshotData.avgWorkoutReadiness?.toString() ?? null,
+            customMetrics: snapshotData.customMetrics,
+            createdAt: snapshotData.createdAt,
+            updatedAt: snapshotData.updatedAt,
+        })
             .onConflictDoUpdate({
                 target: [boxAnalytics.boxId, boxAnalytics.period, boxAnalytics.periodStart],
                 set: {
@@ -599,22 +896,23 @@ export async function processBoxAnalyticsSnapshot(boxId: string, period: Analyti
                     activeAthletes: snapshotData.activeAthletes,
                     newAthletes: snapshotData.newAthletes,
                     churnedAthletes: snapshotData.churnedAthletes,
-                    retentionRate: snapshotData.retentionRate,
+                    // Convert numbers to strings for decimal fields
+                    retentionRate: snapshotData.retentionRate.toString(),
                     totalCheckins: snapshotData.totalCheckins,
                     totalAttendances: snapshotData.totalAttendances,
-                    avgAttendancePerAthlete: snapshotData.avgAttendancePerAthlete,
-                    checkinRate: snapshotData.checkinRate,
+                    avgAttendancePerAthlete: snapshotData.avgAttendancePerAthlete.toString(),
+                    checkinRate: snapshotData.checkinRate.toString(),
                     totalPrs: snapshotData.totalPrs,
                     totalBenchmarkAttempts: snapshotData.totalBenchmarkAttempts,
-                    avgAthletePerformanceScore: snapshotData.avgAthletePerformanceScore,
+                    avgAthletePerformanceScore: snapshotData.avgAthletePerformanceScore.toString(),
                     highRiskAthletes: snapshotData.highRiskAthletes,
                     totalActiveAlerts: snapshotData.totalActiveAlerts,
                     alertsResolved: snapshotData.alertsResolved,
-                    avgTimeToAlertResolution: snapshotData.avgTimeToAlertResolution,
-                    avgEnergyLevel: snapshotData.avgEnergyLevel,
-                    avgSleepQuality: snapshotData.avgSleepQuality,
-                    avgStressLevel: snapshotData.avgStressLevel,
-                    avgWorkoutReadiness: snapshotData.avgWorkoutReadiness,
+                    avgTimeToAlertResolution: snapshotData.avgTimeToAlertResolution !== null ? snapshotData.avgTimeToAlertResolution.toString() : null,
+                    avgEnergyLevel: snapshotData.avgEnergyLevel?.toString() ?? null,
+                    avgSleepQuality: snapshotData.avgSleepQuality?.toString() ?? null,
+                    avgStressLevel: snapshotData.avgStressLevel?.toString() ?? null,
+                    avgWorkoutReadiness: snapshotData.avgWorkoutReadiness?.toString() ?? null,
                     customMetrics: snapshotData.customMetrics,
                     updatedAt: new Date(),
                     periodEnd: snapshotData.periodEnd

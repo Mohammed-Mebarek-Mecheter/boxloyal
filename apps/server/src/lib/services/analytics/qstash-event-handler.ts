@@ -7,7 +7,7 @@ import {
 } from "./analytics-calculations";
 import { db } from "@/db";
 import { boxMemberships } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import {and, eq} from "drizzle-orm";
 import type { Env } from "hono";
 
 // Define the structure of the event payload from QStash
@@ -167,19 +167,19 @@ export async function handleAnalyticsEvent(
 /**
  * Resolve membership ID and box ID from various event formats
  */
-async function resolveMembershipAndBox(
+export async function resolveMembershipAndBox(
     event: QStashAnalyticsEvent
 ): Promise<{ membershipId: string | null; boxId: string | null }> {
-
-    // If we already have both, return them
+    // Case 1: Both membershipId and boxId are provided
     if (event.membershipId && event.boxId) {
         return { membershipId: event.membershipId, boxId: event.boxId };
     }
 
-    // If we have membershipId but not boxId, look up the box
+    // Case 2: membershipId provided, boxId missing → look up boxId
     if (event.membershipId && !event.boxId) {
         try {
-            const membership = await db.select({ boxId: boxMemberships.boxId })
+            const membership = await db
+                .select({ boxId: boxMemberships.boxId })
                 .from(boxMemberships)
                 .where(eq(boxMemberships.id, event.membershipId))
                 .limit(1);
@@ -188,43 +188,55 @@ async function resolveMembershipAndBox(
                 return { membershipId: event.membershipId, boxId: membership[0].boxId };
             }
         } catch (error) {
-            console.error('[QStash Handler] Error looking up box from membershipId:', error);
+            console.error(
+                "[QStash Handler] Error looking up box from membershipId:",
+                error
+            );
         }
     }
 
-    // If we have athleteId (userId) and optionally boxId, look up membership
+    // Case 3: athleteId provided → look up membership (optionally filter by boxId)
     if (event.athleteId) {
         try {
-            let query = db.select({
-                id: boxMemberships.id,
-                boxId: boxMemberships.boxId
-            })
+            const condition = event.boxId
+                ? and(
+                    eq(boxMemberships.userId, event.athleteId),
+                    eq(boxMemberships.boxId, event.boxId)
+                )
+                : eq(boxMemberships.userId, event.athleteId);
+
+            const memberships = await db
+                .select({
+                    id: boxMemberships.id,
+                    boxId: boxMemberships.boxId,
+                })
                 .from(boxMemberships)
-                .where(eq(boxMemberships.userId, event.athleteId));
-
-            // If boxId is specified, filter by it
-            if (event.boxId) {
-                query = query.where(eq(boxMemberships.boxId, event.boxId));
-            }
-
-            const memberships = await query.limit(1);
+                .where(condition)
+                .limit(1);
 
             if (memberships[0]) {
                 return {
                     membershipId: memberships[0].id,
-                    boxId: memberships[0].boxId
+                    boxId: memberships[0].boxId,
                 };
             }
         } catch (error) {
-            console.error('[QStash Handler] Error looking up membership from athleteId:', error);
+            console.error(
+                "[QStash Handler] Error looking up membership from athleteId:",
+                error
+            );
         }
     }
 
-    console.warn('[QStash Handler] Could not resolve membership and box from event:', {
-        membershipId: event.membershipId,
-        athleteId: event.athleteId,
-        boxId: event.boxId
-    });
+    // Fallback: unable to resolve
+    console.warn(
+        "[QStash Handler] Could not resolve membership and box from event:",
+        {
+            membershipId: event.membershipId,
+            athleteId: event.athleteId,
+            boxId: event.boxId,
+        }
+    );
 
     return { membershipId: null, boxId: null };
 }

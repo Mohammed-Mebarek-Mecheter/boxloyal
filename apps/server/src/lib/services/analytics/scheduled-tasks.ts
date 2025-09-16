@@ -1,7 +1,7 @@
 ﻿// lib/services/analytics/scheduled-tasks.ts
 import { db } from "@/db";
-import { boxes } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { boxes, boxAnalytics, athleteRiskScores } from "@/db/schema";
+import { eq, count, gte } from "drizzle-orm";
 import {
     processBoxAnalyticsSnapshot,
     recalculateAllRiskScoresForBox,
