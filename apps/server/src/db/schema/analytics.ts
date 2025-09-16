@@ -419,6 +419,8 @@ export const interventionOutcomes = pgTable("intervention_outcomes", {
     checkinRateChange: decimal("checkin_rate_change", { precision: 5, scale: 2 }), // % change in checkin rate
     wellnessScoreChange: decimal("wellness_score_change", { precision: 5, scale: 2 }), // Change in wellness score
     prActivityChange: integer("pr_activity_change"), // Change in PR/Benchmark attempts
+    overallEffectiveness: text("overall_effectiveness", { enum: ["positive", "neutral", "negative"] }).notNull(),
+    effectivenessScore: decimal("effectiveness_score", { precision: 5, scale: 2 }).notNull(),
 
     // Outcome Period
     outcomePeriodStart: timestamp("outcome_period_start", { withTimezone: true }).notNull(), // When measurement started
@@ -491,6 +493,13 @@ export const coachPerformanceMetrics = pgTable("coach_performance_metrics", {
     id: uuid("id").defaultRandom().primaryKey(),
     boxId: uuid("box_id").references(() => boxes.id, { onDelete: "cascade" }).notNull(),
     coachMembershipId: uuid("coach_membership_id").references(() => boxMemberships.id, { onDelete: "cascade" }).notNull(),
+
+    athletesActive: integer("athletes_active").notNull(),
+    interventionsWithOutcome: integer("interventions_with_outcome").notNull(),
+    alertsReceived: integer("alerts_received").notNull(),
+    engagementScore: decimal("engagement_score", { precision: 5, scale: 2 }).notNull(),
+    effectivenessScore: decimal("effectiveness_score", { precision: 5, scale: 2 }).notNull(),
+    athleteAttendanceImpact: decimal("athlete_attendance_impact", { precision: 5, scale: 2 }),
 
     // Performance Period
     periodStart: timestamp("period_start", { withTimezone: true }).notNull(),

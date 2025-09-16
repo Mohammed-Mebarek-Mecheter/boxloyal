@@ -3,14 +3,14 @@ import { db } from "@/db";
 import {
     boxMemberships,
     athleteRiskScores,
-    athleteAlerts,
-    boxes
+    athleteAlerts
 } from "@/db/schema";
-import { eq, and, sql, gte } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
+import {alertStatusEnum, alertTypeEnum, riskLevelEnum} from "@/db/schema/enums";
 
-type AlertTypeEnum = 'risk_threshold' | 'performance_decline' | 'attendance_drop' | 'wellness_concern' | 'milestone_celebration' | 'checkin_reminder' | 'pr_celebration' | 'benchmark_improvement' | 'intervention_needed' | 'feedback_request';
-type RiskLevelEnum = 'low' | 'medium' | 'high' | 'critical';
-type AlertStatusEnum = 'active' | 'acknowledged' | 'resolved' | 'escalated' | 'snoozed';
+type AlertTypeEnum = typeof alertTypeEnum.enumValues[number];
+type RiskLevelEnum = typeof riskLevelEnum.enumValues[number];
+type AlertStatusEnum = typeof alertStatusEnum.enumValues[number];
 
 export interface GeneratedAlertData {
     boxId: string;
@@ -71,7 +71,7 @@ const ALERT_CONFIGURATIONS: Record<string, AlertConfiguration> = {
         followUpDays: 3
     },
     'performance_crash': {
-        type: 'performance_decline',
+        type: 'declining_performance',
         priority: 1,
         title: 'Severe Performance Decline',
         description: 'Athlete\'s performance metrics dropped by {trend}%. This may indicate overtraining or underlying issues.',
@@ -87,7 +87,7 @@ const ALERT_CONFIGURATIONS: Record<string, AlertConfiguration> = {
 
     // High priority alerts - action needed soon
     'attendance_decline': {
-        type: 'attendance_drop',
+        type: 'poor_attendance',
         priority: 2,
         title: 'Attendance Pattern Change',
         description: 'Athlete\'s attendance dropped {trend}% from their typical pattern. Early intervention can prevent further decline.',
@@ -131,7 +131,7 @@ const ALERT_CONFIGURATIONS: Record<string, AlertConfiguration> = {
 
     // Medium priority - monitoring required
     'performance_stagnation': {
-        type: 'performance_decline',
+        type: 'declining_performance',
         priority: 3,
         title: 'Performance Plateau',
         description: 'Athlete hasn\'t achieved PRs in {days} days. May benefit from program adjustments.',

@@ -58,9 +58,16 @@ export const alertTypeEnum = pgEnum("alert_type", [
     "poor_attendance",
     "negative_wellness",
     "no_checkin",
+    "checkin_reminder",
     "injury_risk",
     "engagement_drop",
-    "churn_risk"
+    "churn_risk",
+    "risk_threshold",
+    "wellness_concern",
+    'pr_celebration',
+    'benchmark_improvement',
+    'intervention_needed',
+    'feedback_request'
 ]);
 
 export const alertStatusEnum = pgEnum("alert_status", [
